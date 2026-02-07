@@ -1,0 +1,142 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                        String         @id @default(uuid())
+  email                     String         @unique
+  password                  String
+  name                      String
+  emailVerified             Boolean        @default(false)
+  otp                       String?
+  otpExpiry                 DateTime?
+  resetPasswordToken        String?        @unique
+  resetPasswordTokenExpiry  DateTime?
+  createdAt                 DateTime       @default(now())
+  updatedAt                 DateTime       @updatedAt
+  taskTemplates             TaskTemplate[]
+  taskInstances             TaskInstance[]
+  dailyLogs                 DailyLog[]
+  healthMetrics             HealthMetrics[]
+
+  @@map("users")
+}
+
+model TaskTemplate {
+  id          String         @id @default(uuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  time        String // Format: "HH:MM" (e.g., "06:00")
+  category    String? // e.g., "Prayer", "Workout", "Study"
+  description String?
+  isRecurring Boolean        @default(true)
+  daysOfWeek  String[] // ["MON", "TUE", "WED", etc.] - empty array means all days
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  instances   TaskInstance[]
+
+  @@map("task_templates")
+}
+
+model TaskInstance {
+  id           String        @id @default(uuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  templateId   String?
+  template     TaskTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  date         DateTime      @db.Date
+  name         String
+  time         String
+  category     String?
+  description  String?
+  isCompleted  Boolean       @default(false)
+  completedAt  DateTime?
+  notes        String? // User's notes when completing the task
+  missedReason String? // Why the task was missed (M5: interrogation)
+  imageUrl     String? // Image URL for AI analysis (food/workout photos)
+  aiData       Json?   // AI analysis results (calories, macros, exercise data)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([userId, date])
+  @@map("task_instances")
+}
+
+model DailyLog {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date           DateTime @db.Date
+  summary        String?  @db.Text // AI-generated diary entry
+  aiPrompt       String?  @db.Text // The prompt used to generate the summary
+  totalTasks     Int?     // Total tasks for the day
+  completedTasks Int?     // Number completed
+  missedTasks    Int?     // Number missed
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@map("daily_logs")
+}
+
+model HealthMetrics {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date            DateTime @db.Date
+  
+  // Sleep Data
+  sleepDuration   Float?   // Hours of sleep
+  sleepQuality    String?  // "poor", "fair", "good", "excellent"
+  bedtime         String?  // Format: "HH:MM"
+  wakeTime        String?  // Format: "HH:MM"
+  
+  // Heart Rate
+  restingHeartRate Int?    // BPM - Resting heart rate
+  avgHeartRate     Int?    // BPM - Average heart rate
+  maxHeartRate     Int?    // BPM - Maximum heart rate
+  minHeartRate     Int?    // BPM - Minimum heart rate
+  
+  // Activity Data
+  steps           Int?     // Daily steps
+  caloriesBurned  Int?     // Total calories burned
+  activeMinutes   Int?     // Minutes of activity
+  distance        Float?   // Distance in km
+  
+  // Weight/Body
+  weight          Float?   // Weight in kg
+  bodyFat         Float?   // Body fat percentage
+  bmi             Float?   // Body Mass Index
+  
+  // Nutrition (calculated from AI food analysis)
+  caloriesConsumed Int?    // Total calories consumed
+  proteinGrams     Int?    // Protein in grams
+  carbsGrams       Int?    // Carbs in grams
+  fatGrams         Int?    // Fat in grams
+  waterIntake      Float?  // Water intake in liters
+  
+  // Mood and Energy
+  moodScore       Int?     // 1-10 mood scale
+  energyLevel     Int?     // 1-10 energy scale
+  stressLevel     Int?     // 1-10 stress scale
+  
+  // Source tracking
+  source          String?  // "manual", "google_fit", "apple_health", "fitbit"
+  rawData         Json?    // Store raw API response for debugging
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("health_metrics")
+}
