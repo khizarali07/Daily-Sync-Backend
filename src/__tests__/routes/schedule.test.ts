@@ -30,15 +30,15 @@ describe("Schedule Routes", () => {
   describe("POST /api/schedule/upload", () => {
     it("should upload CSV and create templates", async () => {
       const mockTemplates = [
-        createTestTaskTemplate({ id: "t1", name: "Morning Prayer", time: "06:00" }),
-        createTestTaskTemplate({ id: "t2", name: "Workout", time: "07:00" }),
+        createTestTaskTemplate({ id: "t1", name: "Morning Prayer", startTime: "06:00", endTime: "06:30" }),
+        createTestTaskTemplate({ id: "t2", name: "Workout", startTime: "07:00", endTime: "08:00" }),
       ];
 
       (prisma.$transaction as jest.Mock).mockResolvedValue(mockTemplates);
 
-      const csvContent = `name,time,category,description,daysOfWeek
-Morning Prayer,06:00,Prayer,Start the day,MON,TUE,WED,THU,FRI
-Workout,07:00,Exercise,Morning exercise,`;
+      const csvContent = `name,startTime,endTime,category,description,daysOfWeek
+Morning Prayer,06:00,06:30,Prayer,Start the day,MON,TUE,WED,THU,FRI
+Workout,07:00,08:00,Exercise,Morning exercise,`;
 
       const response = await request(app)
         .post("/api/schedule/upload")

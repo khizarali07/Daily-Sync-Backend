@@ -37,8 +37,8 @@ describe("Tasks Routes", () => {
   describe("GET /api/tasks/today", () => {
     it("should return today's tasks", async () => {
       const mockTasks = [
-        createTestTaskInstance({ id: "task-1", name: "Morning Prayer", time: "06:00" }),
-        createTestTaskInstance({ id: "task-2", name: "Workout", time: "07:00" }),
+        createTestTaskInstance({ id: "task-1", name: "Morning Prayer", startTime: "06:00", endTime: "06:30" }),
+        createTestTaskInstance({ id: "task-2", name: "Workout", startTime: "07:00", endTime: "08:00" }),
       ];
 
       (prisma.taskInstance.findMany as jest.Mock).mockResolvedValue(mockTasks);
@@ -56,12 +56,12 @@ describe("Tasks Routes", () => {
 
     it("should generate tasks from templates if none exist", async () => {
       const mockTemplates = [
-        createTestTaskTemplate({ id: "template-1", name: "Morning Prayer", time: "06:00" }),
-        createTestTaskTemplate({ id: "template-2", name: "Workout", time: "07:00" }),
+        createTestTaskTemplate({ id: "template-1", name: "Morning Prayer", startTime: "06:00", endTime: "06:30" }),
+        createTestTaskTemplate({ id: "template-2", name: "Workout", startTime: "07:00", endTime: "08:00" }),
       ];
       const mockTasks = [
-        createTestTaskInstance({ id: "task-1", name: "Morning Prayer", time: "06:00" }),
-        createTestTaskInstance({ id: "task-2", name: "Workout", time: "07:00" }),
+        createTestTaskInstance({ id: "task-1", name: "Morning Prayer", startTime: "06:00", endTime: "06:30" }),
+        createTestTaskInstance({ id: "task-2", name: "Workout", startTime: "07:00", endTime: "08:00" }),
       ];
 
       // First call returns empty, second call returns created tasks
@@ -90,7 +90,7 @@ describe("Tasks Routes", () => {
   describe("GET /api/tasks/:date", () => {
     it("should return tasks for a specific date", async () => {
       const mockTasks = [
-        createTestTaskInstance({ id: "task-1", name: "Study", time: "10:00" }),
+        createTestTaskInstance({ id: "task-1", name: "Study", startTime: "10:00", endTime: "12:00" }),
       ];
 
       (prisma.taskInstance.findMany as jest.Mock).mockResolvedValue(mockTasks);

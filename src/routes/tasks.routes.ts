@@ -35,7 +35,7 @@ router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
         userId,
         date: today,
       },
-      orderBy: { time: "asc" },
+      orderBy: { startTime: "asc" },
     });
     
     // If no tasks exist for today, generate from templates
@@ -57,7 +57,8 @@ router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
           templateId: template.id,
           date: today,
           name: template.name,
-          time: template.time,
+          startTime: template.startTime,
+          endTime: template.endTime,
           category: template.category,
           description: template.description,
           isCompleted: false,
@@ -73,7 +74,7 @@ router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
             userId,
             date: today,
           },
-          orderBy: { time: "asc" },
+          orderBy: { startTime: "asc" },
         });
       }
     }
@@ -130,7 +131,7 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
         userId,
         date: targetDate,
       },
-      orderBy: { time: "asc" },
+      orderBy: { startTime: "asc" },
     });
     
     // If no tasks exist, generate from templates
@@ -151,7 +152,8 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
           templateId: template.id,
           date: targetDate,
           name: template.name,
-          time: template.time,
+          startTime: template.startTime,
+          endTime: template.endTime,
           category: template.category,
           description: template.description,
           isCompleted: false,
@@ -166,7 +168,7 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
             userId,
             date: targetDate,
           },
-          orderBy: { time: "asc" },
+          orderBy: { startTime: "asc" },
         });
       }
     }

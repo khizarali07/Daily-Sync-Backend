@@ -22,7 +22,8 @@ const upload = multer({
 
 const csvRowSchema = z.object({
   name: z.string().min(1),
-  time: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/), // HH:MM format
+  startTime: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/), // HH:MM format
+  endTime: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/), // HH:MM format
   category: z.string().optional(),
   description: z.string().optional(),
   daysOfWeek: z.string().optional() // Comma-separated: "MON,TUE,WED"
@@ -54,6 +55,10 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
       try {
         return csvRowSchema.parse(record);
       } catch (error) {
+        if (error instanceof z.ZodError) {
+          const issues = error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+          throw new Error(`Row ${index + 2} is invalid: ${issues}. Ensure you have columns: name, startTime, endTime.`);
+        }
         throw new Error(`Invalid data at row ${index + 2}: ${error}`);
       }
     });
@@ -65,7 +70,8 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
           data: {
             userId,
             name: record.name,
-            time: record.time,
+            startTime: record.startTime,
+            endTime: record.endTime,
             category: record.category || null,
             description: record.description || null,
             isRecurring: true,
@@ -94,7 +100,7 @@ router.get('/templates', authenticate, async (req: AuthRequest, res: Response) =
 
     const templates = await prisma.taskTemplate.findMany({
       where: { userId },
-      orderBy: { time: 'asc' }
+      orderBy: { startTime: 'asc' }
     });
 
     res.json({ templates });
@@ -114,7 +120,8 @@ router.post('/templates', authenticate, async (req: AuthRequest, res: Response) 
       data: {
         userId,
         name: data.name,
-        time: data.time,
+        startTime: data.startTime,
+        endTime: data.endTime,
         category: data.category || null,
         description: data.description || null,
         isRecurring: true,
@@ -131,6 +138,45 @@ router.post('/templates', authenticate, async (req: AuthRequest, res: Response) 
     }
     console.error(error);
     res.status(500).json({ error: 'Failed to create template' });
+  }
+});
+
+// PUT /api/schedule/templates/:id - Update a task template
+router.put('/templates/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { id } = req.params;
+    const data = csvRowSchema.parse(req.body);
+
+    const template = await prisma.taskTemplate.findFirst({
+      where: { id, userId }
+    });
+
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    const updated = await prisma.taskTemplate.update({
+      where: { id },
+      data: {
+        name: data.name,
+        startTime: data.startTime,
+        endTime: data.endTime,
+        category: data.category || null,
+        description: data.description || null,
+        daysOfWeek: data.daysOfWeek
+          ? data.daysOfWeek.split(',').map(d => d.trim().toUpperCase())
+          : []
+      }
+    });
+
+    res.json({ template: updated });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: error.errors });
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update template' });
   }
 });
 
@@ -156,6 +202,25 @@ router.delete('/templates/:id', authenticate, async (req: AuthRequest, res: Resp
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to delete template' });
+  }
+});
+
+// DELETE /api/schedule/templates - Delete all task templates for user
+router.delete('/templates', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    const result = await prisma.taskTemplate.deleteMany({
+      where: { userId }
+    });
+
+    res.json({ 
+      message: `Successfully deleted ${result.count} templates`,
+      count: result.count
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete templates' });
   }
 });
 
