@@ -186,6 +186,9 @@ router.delete('/templates/:id', authenticate, async (req: AuthRequest, res: Resp
     const userId = req.userId!;
     const { id } = req.params;
 
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
     const template = await prisma.taskTemplate.findFirst({
       where: { id, userId }
     });
@@ -194,11 +197,23 @@ router.delete('/templates/:id', authenticate, async (req: AuthRequest, res: Resp
       return res.status(404).json({ error: 'Template not found' });
     }
 
-    await prisma.taskTemplate.delete({
-      where: { id }
-    });
+    const [, deletedFutureInstances] = await prisma.$transaction([
+      prisma.taskTemplate.delete({
+        where: { id }
+      }),
+      prisma.taskInstance.deleteMany({
+        where: {
+          userId,
+          templateId: id,
+          date: { gt: today },
+        },
+      }),
+    ]);
 
-    res.json({ message: 'Template deleted successfully' });
+    res.json({
+      message: 'Template deleted successfully',
+      deletedFutureInstances: deletedFutureInstances.count,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to delete template' });
@@ -210,13 +225,26 @@ router.delete('/templates', authenticate, async (req: AuthRequest, res: Response
   try {
     const userId = req.userId!;
 
-    const result = await prisma.taskTemplate.deleteMany({
-      where: { userId }
-    });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [result, deletedFutureInstances] = await prisma.$transaction([
+      prisma.taskTemplate.deleteMany({
+        where: { userId }
+      }),
+      prisma.taskInstance.deleteMany({
+        where: {
+          userId,
+          templateId: { not: null },
+          date: { gt: today },
+        },
+      }),
+    ]);
 
     res.json({ 
       message: `Successfully deleted ${result.count} templates`,
-      count: result.count
+      count: result.count,
+      deletedFutureInstances: deletedFutureInstances.count,
     });
   } catch (error) {
     console.error(error);

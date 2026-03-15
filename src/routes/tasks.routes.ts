@@ -285,7 +285,7 @@ router.patch("/:id", authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
     const { id } = req.params;
-    const { notes, imageUrl, aiData } = req.body;
+    const { name, startTime, endTime, category, description, notes, imageUrl, aiData } = req.body;
     
     const task = await prisma.taskInstance.findFirst({
       where: {
@@ -297,10 +297,27 @@ router.patch("/:id", authenticate, async (req: AuthRequest, res: Response) => {
     if (!task) {
       return res.status(404).json({ error: "Task not found" });
     }
+
+    if ((startTime && !endTime) || (!startTime && endTime)) {
+      return res.status(400).json({ error: "Both startTime and endTime are required when updating time" });
+    }
+
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    if (startTime && !timeRegex.test(startTime)) {
+      return res.status(400).json({ error: "Invalid startTime format. Use HH:MM" });
+    }
+    if (endTime && !timeRegex.test(endTime)) {
+      return res.status(400).json({ error: "Invalid endTime format. Use HH:MM" });
+    }
     
     const updatedTask = await prisma.taskInstance.update({
       where: { id },
       data: {
+        ...(name !== undefined && { name }),
+        ...(startTime !== undefined && { startTime }),
+        ...(endTime !== undefined && { endTime }),
+        ...(category !== undefined && { category }),
+        ...(description !== undefined && { description }),
         ...(notes !== undefined && { notes }),
         ...(imageUrl !== undefined && { imageUrl }),
         ...(aiData !== undefined && { aiData }),
@@ -352,10 +369,15 @@ router.patch("/:id", authenticate, async (req: AuthRequest, res: Response) => {
 router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, date, time, category } = req.body;
+    const { name, date, startTime, endTime, category, description } = req.body;
     
-    if (!name || !date || !time) {
-      return res.status(400).json({ error: "Name, date, and time are required" });
+    if (!name || !date || !startTime || !endTime) {
+      return res.status(400).json({ error: "Name, date, startTime, and endTime are required" });
+    }
+
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    if (!timeRegex.test(startTime) || !timeRegex.test(endTime)) {
+      return res.status(400).json({ error: "Invalid time format. Use HH:MM" });
     }
     
     const taskDate = new Date(date);
@@ -366,8 +388,10 @@ router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
         userId,
         name,
         date: taskDate,
-        time,
+        startTime,
+        endTime,
         category,
+        description,
         isCompleted: false,
       },
     });
@@ -424,6 +448,56 @@ router.delete("/:id", authenticate, async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error("Delete task error:", error);
     res.status(500).json({ error: "Failed to delete task" });
+  }
+});
+
+/**
+ * @swagger
+ * /api/tasks/date/{date}:
+ *   delete:
+ *     summary: Delete all task instances for a specific date
+ *     tags: [Tasks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date in YYYY-MM-DD format
+ *     responses:
+ *       200:
+ *         description: Tasks deleted successfully
+ */
+router.delete("/date/:date", authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { date } = req.params;
+
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
+    }
+
+    const result = await prisma.taskInstance.deleteMany({
+      where: {
+        userId,
+        date: targetDate,
+      },
+    });
+
+    res.json({
+      message: `Deleted ${result.count} tasks for ${date}`,
+      count: result.count,
+      date,
+    });
+  } catch (error) {
+    console.error("Delete tasks by date error:", error);
+    res.status(500).json({ error: "Failed to delete tasks for date" });
   }
 });
 
