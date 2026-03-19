@@ -1,93 +1,559 @@
 import express, { Request, Response } from "express";
+import OpenAI from "openai";
 import { authenticate, AuthRequest } from "../middleware/auth.middleware";
 import prisma from "../lib/prisma";
 
 const router = express.Router();
 
-// Gemini API configuration
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Using "gemini-flash-latest" alias which maps to the current stable Flash model (usually 1.5-flash)
-// This model supports the free tier (15 RPM) unlike the 2.0/2.5 series which currently require billing
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:1234/v1";
+const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || LMSTUDIO_API_KEY || "lm-studio";
+const LMSTUDIO_MODEL = process.env.LMSTUDIO_MODEL || "qwen3.5-9b-uncensored-hauhaucs-aggressive";
 
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
-    };
-  }>;
+const OPENAI_FALLBACK_URLS = [
+  OPENAI_BASE_URL,
+  process.env.LMSTUDIO_BASE_URL,
+  "http://127.0.0.1:1500/v1",
+  "http://localhost:1234/v1",
+].filter((v, i, arr): v is string => Boolean(v) && arr.indexOf(v as string) === i);
+
+function createOpenAIClient(baseURL: string): OpenAI {
+  return new OpenAI({
+    baseURL,
+    apiKey: OPENAI_API_KEY,
+  });
 }
 
-async function callGeminiVision(base64Image: string, prompt: string): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY not configured");
+function isRetryableAIConnectionError(error: any): boolean {
+  return (
+    error?.code === "ECONNREFUSED" ||
+    error?.code === "ECONNRESET" ||
+    error?.code === "ETIMEDOUT" ||
+    error?.cause?.code === "ECONNREFUSED" ||
+    error?.cause?.code === "ECONNRESET" ||
+    error?.cause?.code === "ETIMEDOUT" ||
+    error?.cause?.cause?.code === "ECONNREFUSED" ||
+    error?.cause?.cause?.code === "ECONNRESET" ||
+    error?.cause?.cause?.code === "ETIMEDOUT"
+  );
+}
+
+async function withOpenAIFailover<T>(
+  task: (client: OpenAI, baseURL: string) => Promise<T>,
+): Promise<T> {
+  let lastError: any;
+
+  for (const baseURL of OPENAI_FALLBACK_URLS) {
+    try {
+      const client = createOpenAIClient(baseURL);
+      return await task(client, baseURL);
+    } catch (error: any) {
+      lastError = error;
+      if (!isRetryableAIConnectionError(error)) {
+        throw error;
+      }
+    }
   }
 
-  const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      contents: [
+  throw lastError;
+}
+
+function extractTextFromCompletion(messageContent: unknown): string {
+  if (typeof messageContent === "string") {
+    return messageContent;
+  }
+
+  if (Array.isArray(messageContent)) {
+    return messageContent
+      .map((part: any) => {
+        if (typeof part === "string") return part;
+        return typeof part?.text === "string" ? part.text : "";
+      })
+      .join("\n")
+      .trim();
+  }
+
+  return "";
+}
+
+function stripThinkBlock(rawResponse: string): string {
+  return rawResponse.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+function extractCleanJson(rawResponse: string): string | null {
+  const withoutThink = stripThinkBlock(rawResponse);
+  const match = withoutThink.match(/```json\s*([\s\S]*?)\s*```/i);
+  return match?.[1]?.trim() || null;
+}
+
+function isLocalServerUnreachable(error: any): boolean {
+  return (
+    error?.code === "ECONNREFUSED" ||
+    error?.cause?.code === "ECONNREFUSED" ||
+    error?.cause?.cause?.code === "ECONNREFUSED"
+  );
+}
+
+function isModelPredictionFailure(error: any): boolean {
+  const msg = String(error?.message || "").toLowerCase();
+  return error?.status === 400 && msg.includes("failed to predict");
+}
+
+function handleAIError(res: Response, error: any, context: string): Response {
+  console.error(`${context} error:`, error);
+  if (isLocalServerUnreachable(error)) {
+    return res.status(503).json({
+      success: false,
+      error: "Local AI server is unreachable",
+    });
+  }
+
+  return res.status(500).json({
+    success: false,
+    error: error?.message || "AI processing failed",
+  });
+}
+
+function ensureDataUri(image: string): string {
+  if (image.startsWith("data:image")) {
+    return image;
+  }
+  return `data:image/jpeg;base64,${image}`;
+}
+
+async function callLocalReasoningWithImage(
+  image: string,
+  prompt: string,
+  options?: {
+    maxTokens?: number;
+    temperature?: number;
+    systemInstruction?: string;
+  },
+): Promise<string> {
+  const imageUri = ensureDataUri(image);
+  const maxTokens = options?.maxTokens ?? 1000;
+  const temperature = options?.temperature ?? 0.2;
+  const systemInstruction =
+    options?.systemInstruction ||
+    "Return the final answer as a markdown JSON block. Reasoning may appear inside <think>...</think>, but final answer must be a ```json block.";
+
+  const completion = await withOpenAIFailover((client) =>
+    client.chat.completions.create({
+      model: LMSTUDIO_MODEL,
+      temperature,
+      max_tokens: maxTokens,
+      // Intentionally stateless: only system + current user prompt/image to stay within local 8K context window.
+      messages: [
         {
-          parts: [
-            {
-              inlineData: {
-                mimeType: "image/jpeg",
-                data: base64Image,
-              },
-            },
-            {
-              text: prompt,
-            },
+          role: "system",
+          content: systemInstruction,
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageUri } },
           ],
         },
       ],
-      generationConfig: {
-        temperature: 0.4,
-        topK: 32,
-        topP: 1,
-        maxOutputTokens: 1024,
-      },
     }),
-  });
+  );
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Gemini API error: ${error}`);
-  }
-
-  const data = (await response.json()) as GeminiResponse;
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  
-  if (!text) {
-    throw new Error("No response from Gemini");
-  }
-
-  return text;
+  return extractTextFromCompletion(completion.choices?.[0]?.message?.content);
 }
 
-function extractJSON(text: string): object | null {
-  // Try to extract JSON from the response
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      return null;
+async function callLocalReasoningText(prompt: string): Promise<string> {
+  const completion = await withOpenAIFailover((client) =>
+    client.chat.completions.create({
+      model: LMSTUDIO_MODEL,
+      temperature: 0.4,
+      max_tokens: 2200,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Return the final answer as a markdown JSON block. If reasoning is present, keep it inside <think>...</think> only.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    }),
+  );
+
+  return extractTextFromCompletion(completion.choices?.[0]?.message?.content);
+}
+
+function safeParseJson<T>(jsonText: string | null): T | null {
+  if (!jsonText) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(jsonText) as T;
+  } catch {
+    return null;
+  }
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/[^\d.-]/g, ""));
+    if (Number.isFinite(parsed)) {
+      return parsed;
     }
   }
-  return null;
+
+  return fallback;
+}
+
+function toNullableNumber(value: unknown): number | null {
+  if (value == null) {
+    return null;
+  }
+
+  const parsed = toNumber(value, Number.NaN);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function normalizeFoodData(input: any): {
+  foodItems: Array<{ name: string; quantity: string }>;
+  totalCalories: number;
+  macros: { protein: number; carbs: number; fat: number; fiber: number };
+  summary: string;
+  error?: string;
+} {
+  const foodItems = Array.isArray(input?.foodItems)
+    ? input.foodItems
+        .map((item: any) => ({
+          name: String(item?.name || "Unknown"),
+          quantity: String(item?.quantity || "unknown"),
+        }))
+        .filter((item: { name: string }) => item.name.trim().length > 0)
+    : [];
+
+  const totalCalories = toNumber(input?.totalCalories, 0);
+  const macros = {
+    protein: toNumber(input?.macros?.protein, 0),
+    carbs: toNumber(input?.macros?.carbs, 0),
+    fat: toNumber(input?.macros?.fat, 0),
+    fiber: toNumber(input?.macros?.fiber, 0),
+  };
+
+  const summary = String(input?.summary || "Food analysis completed.");
+
+  return {
+    foodItems,
+    totalCalories,
+    macros,
+    summary,
+    ...(input?.error ? { error: String(input.error) } : {}),
+  };
+}
+
+function normalizeWorkoutData(input: any): {
+  workoutType?: string;
+  exercises: Array<{
+    name: string;
+    sets: number | null;
+    reps: number | null;
+    weight: string | null;
+    duration: string | null;
+    distance: string | null;
+  }>;
+  totalDuration?: string;
+  caloriesBurned: number;
+  summary: string;
+  error?: string;
+} {
+  const exercises = Array.isArray(input?.exercises)
+    ? input.exercises.map((ex: any) => ({
+        name: String(ex?.name || "Unknown Exercise"),
+        sets: toNullableNumber(ex?.sets),
+        reps: toNullableNumber(ex?.reps),
+        weight: ex?.weight == null ? null : String(ex.weight),
+        duration: ex?.duration == null ? null : String(ex.duration),
+        distance: ex?.distance == null ? null : String(ex.distance),
+      }))
+    : [];
+
+  return {
+    ...(input?.workoutType ? { workoutType: String(input.workoutType) } : {}),
+    exercises,
+    ...(input?.totalDuration ? { totalDuration: String(input.totalDuration) } : {}),
+    caloriesBurned: toNumber(input?.caloriesBurned, 0),
+    summary: String(input?.summary || "Workout analysis completed."),
+    ...(input?.error ? { error: String(input.error) } : {}),
+  };
+}
+
+function parseFoodJsonBlock(raw: string): ReturnType<typeof normalizeFoodData> | null {
+  const extracted = extractCleanJson(raw);
+  const parsed = safeParseJson<any>(extracted);
+  if (!parsed) return null;
+  return normalizeFoodData(parsed);
+}
+
+function parseWorkoutJsonBlock(raw: string): ReturnType<typeof normalizeWorkoutData> | null {
+  const extracted = extractCleanJson(raw);
+  const parsed = safeParseJson<any>(extracted);
+  if (!parsed) return null;
+  return normalizeWorkoutData(parsed);
+}
+
+function truncateForRepair(raw: string, maxChars = 7000): string {
+  if (raw.length <= maxChars) return raw;
+  return raw.slice(0, maxChars);
+}
+
+async function repairFoodJsonFromRaw(raw: string): Promise<ReturnType<typeof normalizeFoodData> | null> {
+  const compactRaw = truncateForRepair(stripThinkBlock(raw));
+  const prompt = `Convert the following food-analysis text into STRICT JSON markdown only.
+Return exactly one fenced JSON block and nothing else.
+
+Required schema:
+\`\`\`json
+{
+  "foodItems": [{"name":"string","quantity":"string"}],
+  "totalCalories": 0,
+  "macros": {"protein":0,"carbs":0,"fat":0,"fiber":0},
+  "summary": "string"
+}
+\`\`\`
+
+Input text:
+${compactRaw}`;
+
+  const repairedRaw = await callLocalReasoningText(prompt);
+  const parsed = parseFoodJsonBlock(repairedRaw);
+  return parsed;
+}
+
+async function repairWorkoutJsonFromRaw(raw: string): Promise<ReturnType<typeof normalizeWorkoutData> | null> {
+  const compactRaw = truncateForRepair(stripThinkBlock(raw));
+  const prompt = `Convert the following workout-analysis text into STRICT JSON markdown only.
+Return exactly one fenced JSON block and nothing else.
+
+Required schema:
+\`\`\`json
+{
+  "workoutType": "string",
+  "exercises": [{"name":"string","sets":null,"reps":null,"weight":null,"duration":null,"distance":null}],
+  "totalDuration": "string",
+  "caloriesBurned": 0,
+  "summary": "string"
+}
+\`\`\`
+
+Input text:
+${compactRaw}`;
+
+  const repairedRaw = await callLocalReasoningText(prompt);
+  const parsed = parseWorkoutJsonBlock(repairedRaw);
+  return parsed;
+}
+
+function heuristicFoodFromText(raw: string): {
+  totalCalories: number;
+  macros: { protein: number; carbs: number; fat: number; fiber: number };
+} {
+  const text = raw.toLowerCase();
+
+  const kcalMatches = [...text.matchAll(/(\d+(?:\.\d+)?)\s*kcal/g)].map((m) => Number(m[1]));
+  const totalCalories = kcalMatches.length > 0 ? Math.round(Math.max(...kcalMatches)) : 0;
+
+  const proteinMatch = text.match(/protein[^\d]*(\d+(?:\.\d+)?)/);
+  const carbsMatch = text.match(/carb(?:s)?[^\d]*(\d+(?:\.\d+)?)/);
+  const fatMatch = text.match(/fat[^\d]*(\d+(?:\.\d+)?)/);
+  const fiberMatch = text.match(/fiber[^\d]*(\d+(?:\.\d+)?)/);
+
+  return {
+    totalCalories,
+    macros: {
+      protein: proteinMatch ? Math.round(Number(proteinMatch[1])) : 0,
+      carbs: carbsMatch ? Math.round(Number(carbsMatch[1])) : 0,
+      fat: fatMatch ? Math.round(Number(fatMatch[1])) : 0,
+      fiber: fiberMatch ? Math.round(Number(fiberMatch[1])) : 0,
+    },
+  };
+}
+
+function parseDurationMinutes(duration: string | undefined): number {
+  if (!duration) return 0;
+
+  const hhmmMatch = duration.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (hhmmMatch) {
+    const hours = Number(hhmmMatch[1]);
+    const minutes = Number(hhmmMatch[2]);
+    const seconds = hhmmMatch[3] ? Number(hhmmMatch[3]) : 0;
+    return Math.round(hours * 60 + minutes + seconds / 60);
+  }
+
+  const minMatch = duration.match(/(\d{1,3})\s*(?:min|mins|minute|minutes)/i);
+  if (minMatch) {
+    return Number(minMatch[1]);
+  }
+
+  return 0;
+}
+
+function estimateCaloriesFromWorkout(durationMins: number, exerciseCount: number): number {
+  if (durationMins > 0) {
+    const estimated = Math.round(durationMins * 6.5 + Math.max(exerciseCount, 1) * 1.5);
+    return Math.max(60, Math.min(1500, estimated));
+  }
+
+  if (exerciseCount > 0) {
+    return Math.max(50, Math.min(800, Math.round(exerciseCount * 12)));
+  }
+
+  return 0;
+}
+
+function heuristicWorkoutFromText(raw: string): {
+  workoutType?: string;
+  exercises: Array<{
+    name: string;
+    sets: number | null;
+    reps: number | null;
+    weight: string | null;
+    duration: string | null;
+    distance: string | null;
+  }>;
+  totalDuration?: string;
+  caloriesBurned: number;
+  summary: string;
+} {
+  const text = stripThinkBlock(raw);
+  const lower = text.toLowerCase();
+
+  const durationMatch = text.match(/(\d{1,3})\s*(?:min|mins|minute|minutes)/i);
+  const duration = durationMatch ? `${Number(durationMatch[1])} mins` : undefined;
+
+  const quotedNames = Array.from(text.matchAll(/(?:text|exercise(?:\s*name)?|name)\s*:\s*"([^"]{3,120})"/gi)).map(
+    (m) => m[1].trim(),
+  );
+
+  const nameRepInline = Array.from(
+    text.matchAll(/([A-Za-z][A-Za-z0-9\s\-()&'/]{3,100}?)\s*[x×]\s*(\d{1,4})/g),
+  ).map((m) => ({ name: m[1].trim(), reps: Number(m[2]) }));
+
+  const extracted: Array<{
+    name: string;
+    sets: number | null;
+    reps: number | null;
+    weight: string | null;
+    duration: string | null;
+    distance: string | null;
+  }> = [];
+
+  if (quotedNames.length > 0) {
+    const repHints = Array.from(text.matchAll(/(?:data(?:\s*below)?|reps?)\s*:\s*"?x?\s*(\d{1,4})"?/gi)).map((m) => Number(m[1]));
+
+    quotedNames.forEach((name, idx) => {
+      const cleaned = name.replace(/\s+/g, " ").trim();
+      if (!cleaned) return;
+      extracted.push({
+        name: cleaned,
+        sets: null,
+        reps: repHints[idx] ?? null,
+        weight: null,
+        duration: null,
+        distance: null,
+      });
+    });
+  }
+
+  nameRepInline.forEach((item) => {
+    extracted.push({
+      name: item.name,
+      sets: null,
+      reps: item.reps,
+      weight: null,
+      duration: null,
+      distance: null,
+    });
+  });
+
+  const deduped = extracted
+    .filter((ex) => ex.name.length > 2)
+    .filter((ex, idx, arr) => {
+      const key = `${ex.name.toLowerCase()}::${ex.reps ?? "na"}`;
+      return arr.findIndex((v) => `${v.name.toLowerCase()}::${v.reps ?? "na"}` === key) === idx;
+    });
+
+  let workoutType = "Workout";
+  if (/(run|jog|treadmill)/i.test(lower)) workoutType = "Running";
+  else if (/(cycle|bike)/i.test(lower)) workoutType = "Cycling";
+  else if (/(yoga|pilates)/i.test(lower)) workoutType = "Mobility";
+  else if (/(strength|weight|dumbbell|barbell|squat|deadlift|leg)/i.test(lower)) workoutType = "Strength Training";
+
+  const explicitCalories = Array.from(text.matchAll(/(\d{2,4})\s*(?:kcal|calories)/gi)).map((m) => Number(m[1]));
+  const durationMins = parseDurationMinutes(duration);
+  const caloriesBurned =
+    explicitCalories.length > 0
+      ? Math.max(...explicitCalories)
+      : estimateCaloriesFromWorkout(durationMins, deduped.length);
+
+  const summary =
+    deduped.length > 0
+      ? `Parsed ${deduped.length} exercises${duration ? ` over ${duration}` : ""}.`
+      : "Workout analysis completed.";
+
+  return {
+    workoutType,
+    exercises: deduped,
+    ...(duration ? { totalDuration: duration } : {}),
+    caloriesBurned,
+    summary,
+  };
+}
+
+function mergeWorkoutData(
+  parsed: ReturnType<typeof normalizeWorkoutData>,
+  rawResponse: string,
+): ReturnType<typeof normalizeWorkoutData> {
+  const heuristics = heuristicWorkoutFromText(rawResponse);
+  const hasMoreHeuristicExercises = heuristics.exercises.length > parsed.exercises.length;
+
+  const mergedExercises = hasMoreHeuristicExercises ? heuristics.exercises : parsed.exercises;
+
+  const parsedDuration = parseDurationMinutes(parsed.totalDuration);
+  const mergedDuration = parsed.totalDuration || heuristics.totalDuration;
+  const durationMins = parsedDuration || parseDurationMinutes(heuristics.totalDuration);
+
+  const mergedCalories =
+    parsed.caloriesBurned > 0
+      ? parsed.caloriesBurned
+      : heuristics.caloriesBurned > 0
+        ? heuristics.caloriesBurned
+        : estimateCaloriesFromWorkout(durationMins, mergedExercises.length);
+
+  const mergedSummary =
+    parsed.summary && parsed.summary.trim().length > 0 && !/parse failed/i.test(parsed.summary)
+      ? parsed.summary
+      : heuristics.summary;
+
+  return {
+    ...parsed,
+    workoutType: parsed.workoutType || heuristics.workoutType,
+    exercises: mergedExercises,
+    ...(mergedDuration ? { totalDuration: mergedDuration } : {}),
+    caloriesBurned: mergedCalories,
+    summary: mergedSummary,
+  };
 }
 
 /**
  * @swagger
  * /api/ai/analyze-food:
  *   post:
- *     summary: Analyze a food image using Gemini AI
+ *     summary: Analyze a food image using local AI server
  *     tags: [AI]
  *     security:
  *       - bearerAuth: []
@@ -147,55 +613,59 @@ router.post("/analyze-food", authenticate, async (req: AuthRequest, res: Respons
       return res.status(400).json({ error: "Image is required (base64 encoded)" });
     }
 
-    // Remove data URL prefix if present
-    const base64Image = image.replace(/^data:image\/\w+;base64,/, "");
-
     const prompt = `Analyze this food image and provide nutritional information.
-Return ONLY a JSON object in this exact format, no other text:
+  Do not include reasoning. Do not include explanations. Start immediately with a JSON markdown block.
+  Return final answer ONLY inside a markdown JSON block:
+\`\`\`json
 {
-  "foodItems": [
-    {"name": "Food item name", "quantity": "estimated portion size"}
-  ],
-  "totalCalories": estimated total calories as a number,
-  "macros": {
-    "protein": grams as a number,
-    "carbs": grams as a number,
-    "fat": grams as a number,
-    "fiber": grams as a number
-  },
+  "foodItems": [{"name": "Food item name", "quantity": "estimated portion size"}],
+  "totalCalories": 0,
+  "macros": {"protein": 0, "carbs": 0, "fat": 0, "fiber": 0},
   "summary": "Brief description of the meal"
 }
+\`\`\`
 
-If you cannot identify the food, return:
-{"error": "Unable to identify food", "foodItems": [], "totalCalories": 0, "macros": {"protein": 0, "carbs": 0, "fat": 0, "fiber": 0}}`;
+If food is unclear, still return valid JSON with sensible defaults and a summary note.`;
 
-    const result = await callGeminiVision(base64Image, prompt);
-    const jsonData = extractJSON(result);
+    const result = await callLocalReasoningWithImage(image, prompt);
+    const parsedFood = parseFoodJsonBlock(result) || await repairFoodJsonFromRaw(result);
 
-    if (jsonData) {
+    if (parsedFood) {
       res.json({
         success: true,
-        data: jsonData,
+        data: parsedFood,
         rawResponse: result,
       });
     } else {
+      const heuristics = heuristicFoodFromText(result);
       res.json({
         success: true,
         data: {
-          summary: result,
-          totalCalories: 0,
-          macros: { protein: 0, carbs: 0, fat: 0, fiber: 0 },
+          summary: "Could not extract nutrition JSON from model output. Please retry with a clearer photo.",
+          totalCalories: heuristics.totalCalories,
+          macros: heuristics.macros,
           foodItems: [],
+          error: "PARSE_FAILED",
         },
         rawResponse: result,
       });
     }
   } catch (error: any) {
-    console.error("Food analysis error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message || "Failed to analyze food image",
-    });
+    if (isModelPredictionFailure(error)) {
+      return res.json({
+        success: true,
+        data: {
+          summary:
+            "Local model could not process this image. It may not support vision input. Please use a vision-capable model in LM Studio.",
+          totalCalories: 0,
+          macros: { protein: 0, carbs: 0, fat: 0, fiber: 0 },
+          foodItems: [],
+          error: "MODEL_VISION_UNAVAILABLE",
+        },
+      });
+    }
+
+    return handleAIError(res, error, "Food analysis");
   }
 });
 
@@ -203,7 +673,7 @@ If you cannot identify the food, return:
  * @swagger
  * /api/ai/analyze-workout:
  *   post:
- *     summary: Analyze a workout image/screenshot using Gemini AI
+ *     summary: Analyze a workout image/screenshot using local AI server
  *     tags: [AI]
  *     security:
  *       - bearerAuth: []
@@ -231,58 +701,71 @@ router.post("/analyze-workout", authenticate, async (req: AuthRequest, res: Resp
       return res.status(400).json({ error: "Image is required (base64 encoded)" });
     }
 
-    const base64Image = image.replace(/^data:image\/\w+;base64,/, "");
-
-    const prompt = `Analyze this workout or fitness app screenshot and extract the exercise data.
-Return ONLY a JSON object in this exact format, no other text:
+    const prompt = `Analyze this workout or fitness app screenshot and extract every visible exercise row.
+  Do not include reasoning. Do not include explanations. Start immediately with a JSON markdown block.
+  Keep summary concise and avoid long prose.
+  Ensure exercises includes all visible entries from top to bottom.
+  If reps are shown like x16, put reps as 16.
+  If calories are not visible, estimate calories based on workout duration and exercise intensity.
+  Return final answer ONLY inside a markdown JSON block:
+\`\`\`json
 {
-  "workoutType": "Type of workout (e.g., Running, Weight Training, Cycling)",
-  "exercises": [
-    {
-      "name": "Exercise name",
-      "sets": number or null,
-      "reps": number or null,
-      "weight": "weight with unit or null",
-      "duration": "duration or null",
-      "distance": "distance with unit or null"
-    }
-  ],
-  "totalDuration": "total workout duration",
-  "caloriesBurned": estimated calories as a number,
-  "summary": "Brief description of the workout"
+  "workoutType": "Running",
+  "exercises": [{"name": "Exercise", "sets": null, "reps": null, "weight": null, "duration": null, "distance": null}],
+  "totalDuration": "00:00",
+  "caloriesBurned": 0,
+  "summary": "Brief description"
 }
+\`\`\``;
 
-If this is a running/cardio screenshot, focus on distance, duration, pace.
-If this is a gym workout, focus on exercises, sets, reps, weights.
-If you cannot identify workout data, return:
-{"error": "Unable to identify workout data", "exercises": [], "caloriesBurned": 0}`;
+    const result = await callLocalReasoningWithImage(image, prompt, {
+      maxTokens: 1400,
+      temperature: 0.15,
+      systemInstruction:
+        "You are an OCR-to-JSON extraction engine. Never include reasoning. Never include prose outside one fenced ```json block. Keep values compact and deterministic.",
+    });
+    const parsedWorkout = parseWorkoutJsonBlock(result) || await repairWorkoutJsonFromRaw(result);
 
-    const result = await callGeminiVision(base64Image, prompt);
-    const jsonData = extractJSON(result);
-
-    if (jsonData) {
+    if (parsedWorkout) {
+      const mergedWorkout = mergeWorkoutData(parsedWorkout, result);
       res.json({
         success: true,
-        data: jsonData,
+        data: mergedWorkout,
         rawResponse: result,
       });
     } else {
+      const heuristicWorkout = heuristicWorkoutFromText(result);
       res.json({
         success: true,
         data: {
-          summary: result,
-          exercises: [],
-          caloriesBurned: 0,
+          workoutType: heuristicWorkout.workoutType,
+          exercises: heuristicWorkout.exercises,
+          totalDuration: heuristicWorkout.totalDuration,
+          caloriesBurned: heuristicWorkout.caloriesBurned,
+          summary:
+            heuristicWorkout.exercises.length > 0
+              ? heuristicWorkout.summary
+              : "Could not extract workout JSON from model output. Please retry with a clearer image.",
+          error: "PARSE_FAILED",
         },
         rawResponse: result,
       });
     }
   } catch (error: any) {
-    console.error("Workout analysis error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message || "Failed to analyze workout image",
-    });
+    if (isModelPredictionFailure(error)) {
+      return res.json({
+        success: true,
+        data: {
+          summary:
+            "Local model could not process this image. It may not support vision input. Please use a vision-capable model in LM Studio.",
+          exercises: [],
+          caloriesBurned: 0,
+          error: "MODEL_VISION_UNAVAILABLE",
+        },
+      });
+    }
+
+    return handleAIError(res, error, "Workout analysis");
   }
 });
 
@@ -290,7 +773,7 @@ If you cannot identify workout data, return:
  * @swagger
  * /api/ai/analyze-general:
  *   post:
- *     summary: General image analysis using Gemini AI
+ *     summary: General image analysis using local AI server
  *     tags: [AI]
  *     security:
  *       - bearerAuth: []
@@ -321,8 +804,7 @@ router.post("/analyze-general", authenticate, async (req: AuthRequest, res: Resp
       return res.status(400).json({ error: "Image is required (base64 encoded)" });
     }
 
-    const base64Image = image.replace(/^data:image\/\w+;base64,/, "");
-    const result = await callGeminiVision(base64Image, prompt);
+    const result = await callLocalReasoningWithImage(image, prompt);
 
     res.json({
       success: true,
@@ -331,44 +813,9 @@ router.post("/analyze-general", authenticate, async (req: AuthRequest, res: Resp
       },
     });
   } catch (error: any) {
-    console.error("General analysis error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message || "Failed to analyze image",
-    });
+    return handleAIError(res, error, "General analysis");
   }
 });
-
-// Helper to call Gemini text-only (no image)
-async function callGeminiText(prompt: string): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY not configured");
-  }
-
-  const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.7,
-        topK: 40,
-        topP: 0.95,
-        maxOutputTokens: 2048,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Gemini API error: ${error}`);
-  }
-
-  const data = (await response.json()) as GeminiResponse;
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("No response from Gemini");
-  return text;
-}
 
 /**
  * @swagger
@@ -409,7 +856,7 @@ router.post("/generate-summary", authenticate, async (req: AuthRequest, res: Res
     // Get all tasks for the day
     const tasks = await prisma.taskInstance.findMany({
       where: { userId, date: targetDate },
-      orderBy: { time: "asc" },
+      orderBy: { startTime: "asc" },
     });
 
     // Get health metrics for the day
@@ -426,7 +873,7 @@ router.post("/generate-summary", authenticate, async (req: AuthRequest, res: Res
       const notes = t.notes ? ` — Notes: ${t.notes}` : "";
       const reason = t.missedReason ? ` — Reason: ${t.missedReason}` : "";
       const aiInfo = t.aiData ? ` — AI Data: ${JSON.stringify(t.aiData)}` : "";
-      return `- ${t.time} | ${t.name} (${t.category || "General"}) | ${status}${notes}${reason}${aiInfo}`;
+      return `- ${t.startTime}-${t.endTime} | ${t.name} (${t.category || "General"}) | ${status}${notes}${reason}${aiInfo}`;
     }).join("\n");
 
     const healthSummary = health ? `
@@ -463,9 +910,14 @@ Instructions:
 4. Include health observations if data is available
 5. End with motivation for tomorrow
 6. Keep the tone warm, personal, and encouraging
-7. Do NOT use markdown formatting - write plain text paragraphs`;
+7. Return only a markdown JSON block with this shape:
+\`\`\`json
+{"summary":"..."}
+\`\`\``;
 
-    const summary = await callGeminiText(megaPrompt);
+  const summaryRaw = await callLocalReasoningText(megaPrompt);
+  const summaryJson = safeParseJson<{ summary?: string }>(extractCleanJson(summaryRaw));
+  const summary = String(summaryJson?.summary || stripThinkBlock(summaryRaw));
 
     // Save to DailyLog
     const dailyLog = await prisma.dailyLog.upsert({
@@ -502,11 +954,7 @@ Instructions:
       },
     });
   } catch (error: any) {
-    console.error("Generate summary error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message || "Failed to generate summary",
-    });
+    return handleAIError(res, error, "Generate summary");
   }
 });
 
