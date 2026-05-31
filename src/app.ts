@@ -52,6 +52,10 @@ export const createApp = () => {
   );
 
   // Routes
+  app.get("/", (req: Request, res: Response) => {
+    res.json({ status: "OK", message: "DailySync API is running! Access /api-docs for documentation." });
+  });
+
   app.get("/health", (req: Request, res: Response) => {
     res.json({ status: "OK", message: "DailySync API is running" });
   });
