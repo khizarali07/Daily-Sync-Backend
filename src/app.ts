@@ -11,8 +11,8 @@ import healthRoutes from "./routes/health.routes";
 import nutritionTargetsRoutes from "./routes/nutrition-targets.routes";
 import mealsRoutes from "./routes/meals.routes";
 
-export const createApp = (): Express => {
-  const app: Express = express();
+export const createApp = () => {
+  const app = express();
 
   const allowedOrigins = [
     "http://localhost:3000",

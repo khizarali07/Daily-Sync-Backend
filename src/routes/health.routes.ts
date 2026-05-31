@@ -434,7 +434,7 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
           caloriesBurned,
           avgHeartRate,
           source: "google_fit",
-          rawData: { stepsData: bucket, caloriesData: caloriesBucket, heartRateData: heartRateBucket },
+          rawData: JSON.stringify({ stepsData: bucket, caloriesData: caloriesBucket, heartRateData: heartRateBucket }),
         },
         create: {
           userId,
@@ -443,7 +443,7 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
           caloriesBurned,
           avgHeartRate,
           source: "google_fit",
-          rawData: { stepsData: bucket, caloriesData: caloriesBucket, heartRateData: heartRateBucket },
+          rawData: JSON.stringify({ stepsData: bucket, caloriesData: caloriesBucket, heartRateData: heartRateBucket }),
         },
       });
 

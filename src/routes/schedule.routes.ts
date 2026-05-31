@@ -76,8 +76,8 @@ router.post('/upload', authenticate, upload.single('file'), async (req: AuthRequ
             description: record.description || null,
             isRecurring: true,
             daysOfWeek: record.daysOfWeek
-              ? record.daysOfWeek.split(',').map((d: string) => d.trim().toUpperCase())
-              : []
+              ? record.daysOfWeek.split(',').map((d: string) => d.trim().toUpperCase()).join(',')
+              : ""
           }
         })
       )
@@ -126,8 +126,8 @@ router.post('/templates', authenticate, async (req: AuthRequest, res: Response) 
         description: data.description || null,
         isRecurring: true,
         daysOfWeek: data.daysOfWeek
-          ? data.daysOfWeek.split(',').map(d => d.trim().toUpperCase())
-          : []
+          ? data.daysOfWeek.split(',').map(d => d.trim().toUpperCase()).join(',')
+          : ""
       }
     });
 
@@ -165,8 +165,8 @@ router.put('/templates/:id', authenticate, async (req: AuthRequest, res: Respons
         category: data.category || null,
         description: data.description || null,
         daysOfWeek: data.daysOfWeek
-          ? data.daysOfWeek.split(',').map(d => d.trim().toUpperCase())
-          : []
+          ? data.daysOfWeek.split(',').map(d => d.trim().toUpperCase()).join(',')
+          : ""
       }
     });
 

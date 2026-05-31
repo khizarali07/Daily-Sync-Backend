@@ -115,13 +115,7 @@ function toNullableNumber(value: unknown): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function normalizeFoodData(input: any): {
-  foodItems: Array<{ name: string; quantity: string }>;
-  totalCalories: number;
-  macros: { protein: number; carbs: number; fat: number; fiber: number };
-  summary: string;
-  error?: string;
-} {
+function normalizeFoodData(input: any) {
   const foodItems = Array.isArray(input?.foodItems)
     ? input.foodItems
         .map((item: any) => ({
