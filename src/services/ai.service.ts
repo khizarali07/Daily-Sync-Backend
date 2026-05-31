@@ -16,6 +16,7 @@ let llamaModel: any = null;
 async function getLlamaModel() {
   if (llamaModel) return llamaModel;
   try {
+    // @ts-ignore
     const { getLlama } = await import("node-llama-cpp");
     const llama = await getLlama();
     llamaModel = await llama.loadModel({ modelPath: LOCAL_MODEL_PATH });
@@ -172,6 +173,7 @@ async function generateLocalText(prompt: string, systemInstruction?: string): Pr
   // Using contextSize: 2048 to prevent Vulkan Out of Memory (OOM) errors!
   const context = await model.createContext({ contextSize: 2048 });
   
+  // @ts-ignore
   const { LlamaChatSession } = await import("node-llama-cpp");
   
   const sequence = context.getSequence();
