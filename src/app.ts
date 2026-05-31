@@ -28,12 +28,8 @@ export const createApp = () => {
   app.use(
     cors({
       origin: (origin, callback) => {
-        // If there's no origin (like a server-to-server request) or it's in our allowed list
-        if (!origin || allowedOrigins.includes(origin) || (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.split(",").includes(origin))) {
-          callback(null, true);
-        } else {
-          callback(new Error("Not allowed by CORS"));
-        }
+        // Allow all origins to prevent CORS errors on Vercel preview URLs, localhost ports, and custom domains
+        callback(null, true);
       },
       credentials: true,
     }),
