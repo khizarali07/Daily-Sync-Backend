@@ -18,7 +18,7 @@ export const sendOTPEmail = async (
 ): Promise<{ success: boolean; error?: string }> => {
   try {
     const mailOptions = {
-      from: process.env.EMAIL_FROM,
+      from: `"DailySync" <${process.env.EMAIL_FROM}>`,
       to: email,
       subject: "Email Verification - DailySync",
       html: `
@@ -65,7 +65,7 @@ export const sendPasswordResetEmail = async (
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
 
     const mailOptions = {
-      from: process.env.EMAIL_FROM,
+      from: `"DailySync" <${process.env.EMAIL_FROM}>`,
       to: email,
       subject: "Password Reset Request - DailySync",
       html: `
@@ -114,7 +114,7 @@ export const sendPasswordChangedEmail = async (
 ): Promise<{ success: boolean; error?: string }> => {
   try {
     const mailOptions = {
-      from: process.env.EMAIL_FROM,
+      from: `"DailySync" <${process.env.EMAIL_FROM}>`,
       to: email,
       subject: "Password Changed Successfully - DailySync",
       html: `
