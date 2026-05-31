@@ -1,80 +1,13 @@
 import express, { Request, Response } from "express";
-import OpenAI from "openai";
 import { authenticate, AuthRequest } from "../middleware/auth.middleware";
 import prisma from "../lib/prisma";
+import {
+  analyzeImageWithText,
+  generateText,
+  getCurrentProvider,
+} from "../services/ai.service";
 
 const router = express.Router();
-
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:1234/v1";
-const LMSTUDIO_API_KEY = process.env.LMSTUDIO_API_KEY;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || LMSTUDIO_API_KEY || "lm-studio";
-const LMSTUDIO_MODEL = process.env.LMSTUDIO_MODEL || "qwen3.5-9b-uncensored-hauhaucs-aggressive";
-
-const OPENAI_FALLBACK_URLS = [
-  OPENAI_BASE_URL,
-  process.env.LMSTUDIO_BASE_URL,
-  "http://127.0.0.1:1500/v1",
-  "http://localhost:1234/v1",
-].filter((v, i, arr): v is string => Boolean(v) && arr.indexOf(v as string) === i);
-
-function createOpenAIClient(baseURL: string): OpenAI {
-  return new OpenAI({
-    baseURL,
-    apiKey: OPENAI_API_KEY,
-  });
-}
-
-function isRetryableAIConnectionError(error: any): boolean {
-  return (
-    error?.code === "ECONNREFUSED" ||
-    error?.code === "ECONNRESET" ||
-    error?.code === "ETIMEDOUT" ||
-    error?.cause?.code === "ECONNREFUSED" ||
-    error?.cause?.code === "ECONNRESET" ||
-    error?.cause?.code === "ETIMEDOUT" ||
-    error?.cause?.cause?.code === "ECONNREFUSED" ||
-    error?.cause?.cause?.code === "ECONNRESET" ||
-    error?.cause?.cause?.code === "ETIMEDOUT"
-  );
-}
-
-async function withOpenAIFailover<T>(
-  task: (client: OpenAI, baseURL: string) => Promise<T>,
-): Promise<T> {
-  let lastError: any;
-
-  for (const baseURL of OPENAI_FALLBACK_URLS) {
-    try {
-      const client = createOpenAIClient(baseURL);
-      return await task(client, baseURL);
-    } catch (error: any) {
-      lastError = error;
-      if (!isRetryableAIConnectionError(error)) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
-}
-
-function extractTextFromCompletion(messageContent: unknown): string {
-  if (typeof messageContent === "string") {
-    return messageContent;
-  }
-
-  if (Array.isArray(messageContent)) {
-    return messageContent
-      .map((part: any) => {
-        if (typeof part === "string") return part;
-        return typeof part?.text === "string" ? part.text : "";
-      })
-      .join("\n")
-      .trim();
-  }
-
-  return "";
-}
 
 function stripThinkBlock(rawResponse: string): string {
   return rawResponse.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
@@ -90,13 +23,18 @@ function isLocalServerUnreachable(error: any): boolean {
   return (
     error?.code === "ECONNREFUSED" ||
     error?.cause?.code === "ECONNREFUSED" ||
-    error?.cause?.cause?.code === "ECONNREFUSED"
+    error?.cause?.cause?.code === "ECONNREFUSED" ||
+    error?.message?.includes("No AI provider available")
   );
 }
 
 function isModelPredictionFailure(error: any): boolean {
   const msg = String(error?.message || "").toLowerCase();
-  return error?.status === 400 && msg.includes("failed to predict");
+  return (
+    (error?.status === 400 && msg.includes("failed to predict")) ||
+    msg.includes("vision input") ||
+    msg.includes("not support")
+  );
 }
 
 function handleAIError(res: Response, error: any, context: string): Response {
@@ -104,7 +42,7 @@ function handleAIError(res: Response, error: any, context: string): Response {
   if (isLocalServerUnreachable(error)) {
     return res.status(503).json({
       success: false,
-      error: "Local AI server is unreachable",
+      error: "AI server is unreachable. Please check LM Studio is running or use Gemini provider.",
     });
   }
 
@@ -112,13 +50,6 @@ function handleAIError(res: Response, error: any, context: string): Response {
     success: false,
     error: error?.message || "AI processing failed",
   });
-}
-
-function ensureDataUri(image: string): string {
-  if (image.startsWith("data:image")) {
-    return image;
-  }
-  return `data:image/jpeg;base64,${image}`;
 }
 
 async function callLocalReasoningWithImage(
@@ -130,59 +61,22 @@ async function callLocalReasoningWithImage(
     systemInstruction?: string;
   },
 ): Promise<string> {
-  const imageUri = ensureDataUri(image);
-  const maxTokens = options?.maxTokens ?? 1000;
-  const temperature = options?.temperature ?? 0.2;
   const systemInstruction =
     options?.systemInstruction ||
     "Return the final answer as a markdown JSON block. Reasoning may appear inside <think>...</think>, but final answer must be a ```json block.";
 
-  const completion = await withOpenAIFailover((client) =>
-    client.chat.completions.create({
-      model: LMSTUDIO_MODEL,
-      temperature,
-      max_tokens: maxTokens,
-      // Intentionally stateless: only system + current user prompt/image to stay within local 8K context window.
-      messages: [
-        {
-          role: "system",
-          content: systemInstruction,
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: imageUri } },
-          ],
-        },
-      ],
-    }),
-  );
-
-  return extractTextFromCompletion(completion.choices?.[0]?.message?.content);
+  return await analyzeImageWithText(image, prompt, {
+    maxTokens: options?.maxTokens ?? 1000,
+    temperature: options?.temperature ?? 0.2,
+    systemInstruction,
+  });
 }
 
 async function callLocalReasoningText(prompt: string): Promise<string> {
-  const completion = await withOpenAIFailover((client) =>
-    client.chat.completions.create({
-      model: LMSTUDIO_MODEL,
-      temperature: 0.4,
-      max_tokens: 2200,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Return the final answer as a markdown JSON block. If reasoning is present, keep it inside <think>...</think> only.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    }),
-  );
+ const systemInstruction =
+    "Return the final answer as a markdown JSON block. If reasoning is present, keep it inside <think>...</think> only.";
 
-  return extractTextFromCompletion(completion.choices?.[0]?.message?.content);
+  return await generateText(prompt, systemInstruction);
 }
 
 function safeParseJson<T>(jsonText: string | null): T | null {
@@ -245,12 +139,54 @@ function normalizeFoodData(input: any): {
     fiber: toNumber(input?.macros?.fiber, 0),
   };
 
+  const vitamins = {
+    vitAMcg: toNumber(input?.vitamins?.vitAMcg, 0),
+    vitCMg: toNumber(input?.vitamins?.vitCMg, 0),
+    vitDIu: toNumber(input?.vitamins?.vitDIu, 0),
+    vitEMg: toNumber(input?.vitamins?.vitEMg, 0),
+    vitKMcg: toNumber(input?.vitamins?.vitKMcg, 0),
+    vitB1Mg: toNumber(input?.vitamins?.vitB1Mg, 0),
+    vitB2Mg: toNumber(input?.vitamins?.vitB2Mg, 0),
+    vitB3Mg: toNumber(input?.vitamins?.vitB3Mg, 0),
+    vitB6Mg: toNumber(input?.vitamins?.vitB6Mg, 0),
+    vitB7Mcg: toNumber(input?.vitamins?.vitB7Mcg, 0),
+    vitB9Mcg: toNumber(input?.vitamins?.vitB9Mcg, 0),
+    vitB12Mcg: toNumber(input?.vitamins?.vitB12Mcg, 0),
+  };
+
+  const minerals = {
+    calciumMg: toNumber(input?.minerals?.calciumMg, 0),
+    magnesiumMg: toNumber(input?.minerals?.magnesiumMg, 0),
+    potassiumMg: toNumber(input?.minerals?.potassiumMg, 0),
+    sodiumMg: toNumber(input?.minerals?.sodiumMg, 0),
+    ironMg: toNumber(input?.minerals?.ironMg, 0),
+    zincMg: toNumber(input?.minerals?.zincMg, 0),
+    iodineMcg: toNumber(input?.minerals?.iodineMcg, 0),
+    seleniumMcg: toNumber(input?.minerals?.seleniumMcg, 0),
+    copperMg: toNumber(input?.minerals?.copperMg, 0),
+    phosphorusMg: toNumber(input?.minerals?.phosphorusMg, 0),
+    chlorideMg: toNumber(input?.minerals?.chlorideMg, 0),
+    manganeseMg: toNumber(input?.minerals?.manganeseMg, 0),
+    fluorideMg: toNumber(input?.minerals?.fluorideMg, 0),
+    chromiumMcg: toNumber(input?.minerals?.chromiumMcg, 0),
+    molybdenumMcg: toNumber(input?.minerals?.molybdenumMcg, 0),
+  };
+
+  const others = {
+    omega3G: toNumber(input?.others?.omega3G, 0),
+    omega6G: toNumber(input?.others?.omega6G, 0),
+    cholineMg: toNumber(input?.others?.cholineMg, 0),
+  };
+
   const summary = String(input?.summary || "Food analysis completed.");
 
   return {
     foodItems,
     totalCalories,
     macros,
+    vitamins,
+    minerals,
+    others,
     summary,
     ...(input?.error ? { error: String(input.error) } : {}),
   };
@@ -322,6 +258,9 @@ Required schema:
   "foodItems": [{"name":"string","quantity":"string"}],
   "totalCalories": 0,
   "macros": {"protein":0,"carbs":0,"fat":0,"fiber":0},
+  "vitamins": {"vitAMcg":0,"vitCMg":0,"vitDIu":0,"vitEMg":0,"vitKMcg":0,"vitB1Mg":0,"vitB2Mg":0,"vitB3Mg":0,"vitB6Mg":0,"vitB7Mcg":0,"vitB9Mcg":0,"vitB12Mcg":0},
+  "minerals": {"calciumMg":0,"magnesiumMg":0,"potassiumMg":0,"sodiumMg":0,"ironMg":0,"zincMg":0,"iodineMcg":0,"seleniumMcg":0,"copperMg":0,"phosphorusMg":0,"chlorideMg":0,"manganeseMg":0,"fluorideMg":0,"chromiumMcg":0,"molybdenumMcg":0},
+  "others": {"omega3G":0,"omega6G":0,"cholineMg":0},
   "summary": "string"
 }
 \`\`\`
@@ -621,6 +560,9 @@ router.post("/analyze-food", authenticate, async (req: AuthRequest, res: Respons
   "foodItems": [{"name": "Food item name", "quantity": "estimated portion size"}],
   "totalCalories": 0,
   "macros": {"protein": 0, "carbs": 0, "fat": 0, "fiber": 0},
+  "vitamins": {"vitAMcg":0,"vitCMg":0,"vitDIu":0,"vitEMg":0,"vitKMcg":0,"vitB1Mg":0,"vitB2Mg":0,"vitB3Mg":0,"vitB6Mg":0,"vitB7Mcg":0,"vitB9Mcg":0,"vitB12Mcg":0},
+  "minerals": {"calciumMg":0,"magnesiumMg":0,"potassiumMg":0,"sodiumMg":0,"ironMg":0,"zincMg":0,"iodineMcg":0,"seleniumMcg":0,"copperMg":0,"phosphorusMg":0,"chlorideMg":0,"manganeseMg":0,"fluorideMg":0,"chromiumMcg":0,"molybdenumMcg":0},
+  "others": {"omega3G":0,"omega6G":0,"cholineMg":0},
   "summary": "Brief description of the meal"
 }
 \`\`\`
@@ -644,6 +586,9 @@ If food is unclear, still return valid JSON with sensible defaults and a summary
           summary: "Could not extract nutrition JSON from model output. Please retry with a clearer photo.",
           totalCalories: heuristics.totalCalories,
           macros: heuristics.macros,
+          vitamins: {vitAMcg:0,vitCMg:0,vitDIu:0,vitEMg:0,vitKMcg:0,vitB1Mg:0,vitB2Mg:0,vitB3Mg:0,vitB6Mg:0,vitB7Mcg:0,vitB9Mcg:0,vitB12Mcg:0},
+          minerals: {calciumMg:0,magnesiumMg:0,potassiumMg:0,sodiumMg:0,ironMg:0,zincMg:0,iodineMcg:0,seleniumMcg:0,copperMg:0,phosphorusMg:0,chlorideMg:0,manganeseMg:0,fluorideMg:0,chromiumMcg:0,molybdenumMcg:0},
+          others: {omega3G:0,omega6G:0,cholineMg:0},
           foodItems: [],
           error: "PARSE_FAILED",
         },
@@ -659,6 +604,9 @@ If food is unclear, still return valid JSON with sensible defaults and a summary
             "Local model could not process this image. It may not support vision input. Please use a vision-capable model in LM Studio.",
           totalCalories: 0,
           macros: { protein: 0, carbs: 0, fat: 0, fiber: 0 },
+          vitamins: {vitAMcg:0,vitCMg:0,vitDIu:0,vitEMg:0,vitKMcg:0,vitB1Mg:0,vitB2Mg:0,vitB3Mg:0,vitB6Mg:0,vitB7Mcg:0,vitB9Mcg:0,vitB12Mcg:0},
+          minerals: {calciumMg:0,magnesiumMg:0,potassiumMg:0,sodiumMg:0,ironMg:0,zincMg:0,iodineMcg:0,seleniumMcg:0,copperMg:0,phosphorusMg:0,chlorideMg:0,manganeseMg:0,fluorideMg:0,chromiumMcg:0,molybdenumMcg:0},
+          others: {omega3G:0,omega6G:0,cholineMg:0},
           foodItems: [],
           error: "MODEL_VISION_UNAVAILABLE",
         },

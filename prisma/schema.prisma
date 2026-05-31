@@ -6,8 +6,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 model User {
@@ -26,6 +26,8 @@ model User {
   taskInstances             TaskInstance[]
   dailyLogs                 DailyLog[]
   healthMetrics             HealthMetrics[]
+  nutritionTargets          NutritionTarget[]
+  mealLogs                  MealLog[]
 
   @@map("users")
 }
@@ -40,7 +42,7 @@ model TaskTemplate {
   category    String? // e.g., "Prayer", "Workout", "Study"
   description String?
   isRecurring Boolean        @default(true)
-  daysOfWeek  String[] // ["MON", "TUE", "WED", etc.] - empty array means all days
+  daysOfWeek  String         @default("") // Comma-separated: "MON,TUE,WED" - empty means all days
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
   instances   TaskInstance[]
@@ -54,7 +56,7 @@ model TaskInstance {
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   templateId   String?
   template     TaskTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  date         DateTime      @db.Date
+  date         DateTime
   name         String
   startTime    String
   endTime      String
@@ -65,7 +67,7 @@ model TaskInstance {
   notes        String? // User's notes when completing the task
   missedReason String? // Why the task was missed (M5: interrogation)
   imageUrl     String? // Image URL for AI analysis (food/workout photos)
-  aiData       Json?   // AI analysis results (calories, macros, exercise data)
+  aiData       String? // AI analysis results as JSON string (calories, macros, exercise data)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -77,9 +79,9 @@ model DailyLog {
   id             String   @id @default(uuid())
   userId         String
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  date           DateTime @db.Date
-  summary        String?  @db.Text // AI-generated diary entry
-  aiPrompt       String?  @db.Text // The prompt used to generate the summary
+  date           DateTime
+  summary        String?  // AI-generated diary entry
+  aiPrompt       String?  // The prompt used to generate the summary
   totalTasks     Int?     // Total tasks for the day
   completedTasks Int?     // Number completed
   missedTasks    Int?     // Number missed
@@ -94,8 +96,8 @@ model HealthMetrics {
   id              String   @id @default(uuid())
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  date            DateTime @db.Date
-  
+  date            DateTime
+
   // Sleep Data
   sleepDuration   Float?   // Hours of sleep
   sleepQuality    String?  // "poor", "fair", "good", "excellent"
@@ -124,7 +126,42 @@ model HealthMetrics {
   proteinGrams     Int?    // Protein in grams
   carbsGrams       Int?    // Carbs in grams
   fatGrams         Int?    // Fat in grams
+  fiberGrams       Float?  // Fiber in grams
   waterIntake      Float?  // Water intake in liters
+  
+  // Vitamins
+  vitAMcg          Float?
+  vitCMg           Float?
+  vitDIu           Float?
+  vitEMg           Float?
+  vitKMcg          Float?
+  vitB1Mg          Float?
+  vitB2Mg          Float?
+  vitB3Mg          Float?
+  vitB6Mg          Float?
+  vitB7Mcg         Float?
+  vitB9Mcg         Float?
+  vitB12Mcg        Float?
+
+  // Minerals & Others
+  calciumMg        Float?
+  magnesiumMg      Float?
+  potassiumMg      Float?
+  sodiumMg         Float?
+  ironMg           Float?
+  zincMg           Float?
+  iodineMcg        Float?
+  seleniumMcg      Float?
+  copperMg         Float?
+  phosphorusMg     Float?
+  omega3G          Float?
+  omega6G          Float?
+  cholineMg        Float?
+  manganeseMg      Float?
+  fluorideMg       Float?
+  chromiumMcg      Float?
+  molybdenumMcg    Float?
+  chlorideMg       Float?
   
   // Mood and Energy
   moodScore       Int?     // 1-10 mood scale
@@ -133,12 +170,84 @@ model HealthMetrics {
   
   // Source tracking
   source          String?  // "manual", "google_fit", "apple_health", "fitbit"
-  rawData         Json?    // Store raw API response for debugging
-  
+  rawData         String?  // Store raw API response for debugging as JSON string
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   @@unique([userId, date])
   @@index([userId, date])
   @@map("health_metrics")
+}
+
+model NutritionTarget {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nutrient  String   // e.g., "Protein", "Vit C"
+  min       Float?
+  max       Float?
+  target    Float?
+  unit      String
+
+  @@unique([userId, nutrient])
+  @@map("nutrition_targets")
+}
+
+model MealLog {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date            DateTime // The day this meal belongs to
+  mealType        String   // "Breakfast", "Lunch", "Dinner", "Snack"
+  name            String?  // Description or name of the meal
+  summary         String?  // AI Summary or manual notes
+  
+  // Basic Macros
+  calories        Int?
+  proteinGrams    Int?
+  carbsGrams      Int?
+  fatGrams        Int?
+  fiberGrams      Float?
+  waterIntake     Float?
+
+  // Vitamins
+  vitAMcg         Float?
+  vitCMg          Float?
+  vitDIu          Float?
+  vitEMg          Float?
+  vitKMcg         Float?
+  vitB1Mg         Float?
+  vitB2Mg         Float?
+  vitB3Mg         Float?
+  vitB6Mg         Float?
+  vitB7Mcg        Float?
+  vitB9Mcg        Float?
+  vitB12Mcg       Float?
+
+  // Minerals & Others
+  calciumMg       Float?
+  magnesiumMg     Float?
+  potassiumMg     Float?
+  sodiumMg        Float?
+  ironMg          Float?
+  zincMg          Float?
+  iodineMcg       Float?
+  seleniumMcg     Float?
+  copperMg        Float?
+  phosphorusMg    Float?
+  omega3G         Float?
+  omega6G         Float?
+  cholineMg       Float?
+  manganeseMg     Float?
+  fluorideMg      Float?
+  chromiumMcg     Float?
+  molybdenumMcg   Float?
+  chlorideMg      Float?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, date])
+  @@map("meal_logs")
 }

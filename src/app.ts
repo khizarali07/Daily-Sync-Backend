@@ -6,15 +6,35 @@ import authRoutes from "./routes/auth.routes";
 import scheduleRoutes from "./routes/schedule.routes";
 import tasksRoutes from "./routes/tasks.routes";
 import aiRoutes from "./routes/ai.routes";
+import aiProviderRoutes from "./routes/ai-provider.routes";
 import healthRoutes from "./routes/health.routes";
+import nutritionTargetsRoutes from "./routes/nutrition-targets.routes";
+import mealsRoutes from "./routes/meals.routes";
 
 export const createApp = (): Express => {
   const app: Express = express();
 
-  // Middleware
+  const allowedOrigins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://localhost:3003",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:3002",
+    "http://127.0.0.1:3003",
+  ];
+
   app.use(
     cors({
-      origin: process.env.ALLOWED_ORIGINS?.split(",") || "http://localhost:3000",
+      origin: (origin, callback) => {
+        // If there's no origin (like a server-to-server request) or it's in our allowed list
+        if (!origin || allowedOrigins.includes(origin) || (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.split(",").includes(origin))) {
+          callback(null, true);
+        } else {
+          callback(new Error("Not allowed by CORS"));
+        }
+      },
       credentials: true,
     }),
   );
@@ -40,7 +60,10 @@ export const createApp = (): Express => {
   app.use("/api/schedule", scheduleRoutes);
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/ai", aiRoutes);
+  app.use("/api/ai-provider", aiProviderRoutes);
   app.use("/api/health", healthRoutes);
+  app.use("/api/nutrition-targets", nutritionTargetsRoutes);
+  app.use("/api/meals", mealsRoutes);
 
   // Error handling middleware
   app.use((err: any, req: Request, res: Response, next: any) => {

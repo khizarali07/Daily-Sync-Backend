@@ -44,8 +44,8 @@ router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
         where: {
           userId,
           OR: [
-            { daysOfWeek: { isEmpty: true } }, // All days
-            { daysOfWeek: { has: todayDay } }, // Specific day
+            { daysOfWeek: "" }, // All days
+            { daysOfWeek: { contains: todayDay } }, // Specific day
           ],
         },
       });
@@ -140,8 +140,8 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
         where: {
           userId,
           OR: [
-            { daysOfWeek: { isEmpty: true } },
-            { daysOfWeek: { has: dayOfWeek } },
+            { daysOfWeek: "" },
+            { daysOfWeek: { contains: dayOfWeek } },
           ],
         },
       });
