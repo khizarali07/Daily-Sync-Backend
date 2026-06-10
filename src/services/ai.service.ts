@@ -198,4 +198,16 @@ async function generateGeminiText(prompt: string, systemInstruction?: string): P
   return result.response.text();
 }
 
+export async function recalculateFood(foodItems: {name: string, quantity: string}[], summary: string): Promise<string> {
+  const localAiUrl = process.env.LOCAL_AI_URL;
+  if (!localAiUrl) throw new Error("LOCAL_AI_URL not configured for local AI engine.");
 
+  const response = await axios.post(`${localAiUrl}/recalculate-food`, {
+    foodItems,
+    summary
+  }, {
+    timeout: 30000 // 30 seconds for USDA API aggregation
+  });
+
+  return typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+}

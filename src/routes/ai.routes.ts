@@ -121,6 +121,7 @@ function normalizeFoodData(input: any) {
         .map((item: any) => ({
           name: String(item?.name || "Unknown"),
           quantity: String(item?.quantity || "unknown"),
+          nutrients: item?.nutrients || null,
         }))
         .filter((item: { name: string }) => item.name.trim().length > 0)
     : [];
@@ -249,7 +250,7 @@ Return exactly one fenced JSON block and nothing else.
 Required schema:
 \`\`\`json
 {
-  "foodItems": [{"name":"string","quantity":"string"}],
+  "foodItems": [{"name":"string","quantity":"string","nutrients":{}}],
   "totalCalories": 0,
   "macros": {"protein":0,"carbs":0,"fat":0,"fiber":0},
   "vitamins": {"vitAMcg":0,"vitCMg":0,"vitDIu":0,"vitEMg":0,"vitKMcg":0,"vitB1Mg":0,"vitB2Mg":0,"vitB3Mg":0,"vitB6Mg":0,"vitB7Mcg":0,"vitB9Mcg":0,"vitB12Mcg":0},
@@ -551,7 +552,7 @@ router.post("/analyze-food", authenticate, async (req: AuthRequest, res: Respons
   Return final answer ONLY inside a markdown JSON block:
 \`\`\`json
 {
-  "foodItems": [{"name": "Food item name", "quantity": "estimated portion size"}],
+  "foodItems": [{"name": "Food item name", "quantity": "estimated portion size", "nutrients": {}}],
   "totalCalories": 0,
   "macros": {"protein": 0, "carbs": 0, "fat": 0, "fiber": 0},
   "vitamins": {"vitAMcg":0,"vitCMg":0,"vitDIu":0,"vitEMg":0,"vitKMcg":0,"vitB1Mg":0,"vitB2Mg":0,"vitB3Mg":0,"vitB6Mg":0,"vitB7Mcg":0,"vitB9Mcg":0,"vitB12Mcg":0},
@@ -608,6 +609,69 @@ If food is unclear, still return valid JSON with sensible defaults and a summary
     }
 
     return handleAIError(res, error, "Food analysis");
+  }
+});
+
+/**
+ * @swagger
+ * /api/ai/recalculate-food:
+ *   post:
+ *     summary: Recalculate food nutrition based on manual edits
+ *     tags: [AI]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - foodItems
+ *             properties:
+ *               foodItems:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     name:
+ *                       type: string
+ *                     quantity:
+ *                       type: string
+ *               summary:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Recalculated food analysis result
+ */
+router.post("/recalculate-food", authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { foodItems, summary } = req.body;
+
+    if (!foodItems || !Array.isArray(foodItems)) {
+      return res.status(400).json({ error: "foodItems array is required" });
+    }
+
+    const { recalculateFood } = await import("../services/ai.service");
+    const result = await recalculateFood(foodItems, summary || "Recalculated meal");
+    
+    // The result from the Python engine is a JSON block
+    const parsedFood = parseFoodJsonBlock(result);
+
+    if (parsedFood) {
+      res.json({
+        success: true,
+        data: parsedFood,
+        rawResponse: result,
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: "Failed to parse recalculated nutrition from AI engine."
+      });
+    }
+  } catch (error: any) {
+    return handleAIError(res, error, "Recalculate food analysis");
   }
 });
 
