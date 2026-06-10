@@ -10,6 +10,7 @@ import aiProviderRoutes from "./routes/ai-provider.routes";
 import healthRoutes from "./routes/health.routes";
 import nutritionTargetsRoutes from "./routes/nutrition-targets.routes";
 import mealsRoutes from "./routes/meals.routes";
+import localAiRoutes from "./routes/local-ai.routes";
 
 export const createApp = () => {
   const app = express();
@@ -60,6 +61,7 @@ export const createApp = () => {
   app.use("/api/schedule", scheduleRoutes);
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/ai", aiRoutes);
+  app.use("/api/local-ai", localAiRoutes);
   app.use("/api/ai-provider", aiProviderRoutes);
   app.use("/api/health", healthRoutes);
   app.use("/api/nutrition-targets", nutritionTargetsRoutes);

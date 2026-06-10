@@ -50,8 +50,12 @@ const healthMetricsSchema = z.object({
 router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    const today = new Date(dateStr + "T00:00:00Z");
 
     const metrics = await prisma.healthMetrics.findUnique({
       where: {
@@ -105,8 +109,7 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
     const { date } = req.params;
 
-    const targetDate = new Date(date);
-    targetDate.setHours(0, 0, 0, 0);
+    const targetDate = new Date(date + "T00:00:00Z");
 
     if (isNaN(targetDate.getTime())) {
       return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
@@ -165,10 +168,8 @@ router.get("/range", authenticate, async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "startDate and endDate are required" });
     }
 
-    const start = new Date(startDate as string);
-    const end = new Date(endDate as string);
-    start.setHours(0, 0, 0, 0);
-    end.setHours(23, 59, 59, 999);
+    const start = new Date((startDate as string) + "T00:00:00Z");
+    const end = new Date((endDate as string) + "T23:59:59.999Z");
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       return res.status(400).json({ error: "Invalid date format" });
@@ -233,8 +234,7 @@ router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
     const data = healthMetricsSchema.parse(req.body);
 
-    const targetDate = new Date(data.date);
-    targetDate.setHours(0, 0, 0, 0);
+    const targetDate = new Date(data.date + "T00:00:00Z");
 
     // Remove date from data since we're using it as a unique key
     const { date, ...metricsData } = data;
@@ -310,10 +310,8 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
       return res.status(400).json({ error: "Google Fit access token is required" });
     }
 
-    const start = startDate ? new Date(startDate) : new Date();
-    const end = endDate ? new Date(endDate) : new Date();
-    start.setHours(0, 0, 0, 0);
-    end.setHours(23, 59, 59, 999);
+    const start = new Date(startDate ? `${startDate}T00:00:00Z` : new Date().toISOString().split("T")[0] + "T00:00:00Z");
+    const end = new Date(endDate ? `${endDate}T23:59:59.999Z` : new Date().toISOString().split("T")[0] + "T23:59:59.999Z");
 
     // Google Fit API endpoints
     const startTimeMillis = start.getTime();
@@ -396,7 +394,9 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
     // Process each day's data
     for (const bucket of stepsData.bucket || []) {
       const bucketDate = new Date(parseInt(bucket.startTimeMillis));
-      bucketDate.setHours(0, 0, 0, 0);
+      // Standardize the date to UTC midnight to match our system
+      const dateStr = bucketDate.toISOString().split("T")[0];
+      const standardizedDate = new Date(dateStr + "T00:00:00Z");
 
       let steps = 0;
       if (bucket.dataset?.[0]?.point?.[0]?.value?.[0]?.intVal) {
@@ -426,7 +426,7 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
         where: {
           userId_date: {
             userId,
-            date: bucketDate,
+            date: standardizedDate,
           },
         },
         update: {
@@ -438,7 +438,7 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
         },
         create: {
           userId,
-          date: bucketDate,
+          date: standardizedDate,
           steps,
           caloriesBurned,
           avgHeartRate,
@@ -447,7 +447,7 @@ router.post("/sync/google-fit", authenticate, async (req: AuthRequest, res: Resp
         },
       });
 
-      syncedDates.push(bucketDate.toISOString().split("T")[0]);
+      syncedDates.push(dateStr);
     }
 
     res.json({
@@ -478,11 +478,13 @@ router.get("/stats/weekly", authenticate, async (req: AuthRequest, res: Response
     const userId = req.userId!;
     
     // Get last 7 days
-    const endDate = new Date();
-    const startDate = new Date();
+    // Get last 7 days using exact UTC bounds
+    const now = new Date();
+    const dateStr = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+    
+    const endDate = new Date(dateStr + "T23:59:59.999Z");
+    const startDate = new Date(dateStr + "T00:00:00Z");
     startDate.setDate(startDate.getDate() - 7);
-    startDate.setHours(0, 0, 0, 0);
-    endDate.setHours(23, 59, 59, 999);
 
     const metrics = await prisma.healthMetrics.findMany({
       where: {
@@ -593,8 +595,7 @@ router.delete("/:date", authenticate, async (req: AuthRequest, res: Response) =>
     const userId = req.userId!;
     const { date } = req.params;
 
-    const targetDate = new Date(date);
-    targetDate.setHours(0, 0, 0, 0);
+    const targetDate = new Date(date + "T00:00:00Z");
 
     if (isNaN(targetDate.getTime())) {
       return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });

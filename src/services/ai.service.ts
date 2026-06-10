@@ -1,31 +1,16 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import fs from "fs";
 
+import axios from "axios";
+
 // AI Provider configuration
 let currentProvider: "local-gguf" | "gemini" = (process.env.AI_PROVIDER as any) === "gemini" ? "gemini" : "local-gguf";
-
-const LOCAL_MODEL_PATH = "C:\\Users\\PC\\Desktop\\DATA\\AI\\Models\\GGUF\\Jackrong-Qwen3.5-9B-Claude-4.6-Opus\\Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF\\Qwen3.5-9B.Q4_K_M.gguf";
 
 // Gemini configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash-exp";
 
 let geminiClient: GoogleGenerativeAI | null = null;
-let llamaModel: any = null;
-
-async function getLlamaModel() {
-  if (llamaModel) return llamaModel;
-  try {
-    // @ts-ignore
-    const { getLlama } = await import("node-llama-cpp");
-    const llama = await getLlama();
-    llamaModel = await llama.loadModel({ modelPath: LOCAL_MODEL_PATH });
-    return llamaModel;
-  } catch (error) {
-    console.error("[AI Service] Error loading local GGUF model:", error);
-    throw error;
-  }
-}
 
 function getGeminiClient(): GoogleGenerativeAI {
   if (!geminiClient) {
@@ -49,11 +34,8 @@ export function setProvider(provider: "local-gguf" | "gemini"): void {
 
 // Check if local model is available
 export async function checkLocalModelAvailability(): Promise<boolean> {
-  try {
-    return fs.existsSync(LOCAL_MODEL_PATH);
-  } catch (error) {
-    return false;
-  }
+  if (!process.env.LOCAL_AI_URL) return false;
+  return true; // Assume true if URL exists, or we could ping it
 }
 
 export function checkGeminiAvailability(): boolean {
@@ -128,8 +110,23 @@ export async function analyzeImageWithText(
   const provider = await ensureProviderAvailable();
 
   if (provider === "local-gguf") {
-    // Pass image directly in prompt structure. If the model supports vision natively, it can process it.
-    return generateLocalText(`![image](${image})\n${prompt}`, options?.systemInstruction);
+    const localAiUrl = process.env.LOCAL_AI_URL;
+    if (!localAiUrl) throw new Error("LOCAL_AI_URL not configured for local AI engine.");
+
+    const sysInstruction = options?.systemInstruction ? options.systemInstruction + "\n\n" : "";
+    
+    // Format the image properly to remove the MIME type prefix if the Python backend adds it
+    const base64 = image.replace(/^data:image\/\w+;base64,/, "");
+
+    const response = await axios.post(`${localAiUrl}/analyze-food`, {
+      image: base64,
+      prompt: sysInstruction + prompt
+    }, {
+      timeout: 120000 // 2 minutes for VLM analysis
+    });
+    
+    // The Python server returns JSON directly, we stringify it to pass it back to our JSON-repair logic
+    return typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
   } else {
     return analyzeGeminiImage(image, prompt, options);
   }
@@ -169,29 +166,18 @@ export async function generateText(prompt: string, systemInstruction?: string): 
 }
 
 async function generateLocalText(prompt: string, systemInstruction?: string): Promise<string> {
-  const model = await getLlamaModel();
-  // Using contextSize: 2048 to prevent Vulkan Out of Memory (OOM) errors!
-  const context = await model.createContext({ contextSize: 2048 });
-  
-  // @ts-ignore
-  const { LlamaChatSession } = await import("node-llama-cpp");
-  
-  const sequence = context.getSequence();
-  const session = new LlamaChatSession({ 
-    contextSequence: sequence,
-    systemPrompt: systemInstruction || undefined
+  const localAiUrl = process.env.LOCAL_AI_URL;
+  if (!localAiUrl) throw new Error("LOCAL_AI_URL not configured for local AI engine.");
+
+  const sysInstruction = systemInstruction ? systemInstruction + "\n\n" : "";
+
+  const response = await axios.post(`${localAiUrl}/analyze-food`, {
+    prompt: sysInstruction + prompt
+  }, {
+    timeout: 120000
   });
-  
-  try {
-    const response = await session.prompt(prompt, {
-      maxTokens: 2200,
-      temperature: 0.4
-    });
-    return response;
-  } finally {
-    // Dispose sequence to free up memory for the next request
-    sequence.dispose();
-  }
+
+  return typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
 }
 
 async function generateGeminiText(prompt: string, systemInstruction?: string): Promise<string> {
