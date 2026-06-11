@@ -66,7 +66,7 @@ router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
         },
       },
       include: {
-        workout: true,
+        workouts: true,
       },
     });
 
@@ -191,7 +191,7 @@ router.get("/range", authenticate, async (req: AuthRequest, res: Response) => {
         },
       },
       include: {
-        workout: true,
+        workouts: true,
       },
       orderBy: { date: "asc" },
     });
@@ -246,8 +246,28 @@ router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
 
     const targetDate = new Date(data.date + "T00:00:00Z");
 
-    // Remove date from data since we're using it as a unique key
-    const { date, ...metricsData } = data;
+    // Remove date and workoutId from data
+    const { date, workoutId, ...metricsData } = data;
+
+    const updateData: any = {
+      ...metricsData,
+      source: metricsData.source || "manual",
+    };
+
+    if (workoutId) {
+      updateData.workouts = { connect: { id: workoutId } };
+    }
+
+    const createData: any = {
+      userId,
+      date: targetDate,
+      ...metricsData,
+      source: metricsData.source || "manual",
+    };
+
+    if (workoutId) {
+      createData.workouts = { connect: { id: workoutId } };
+    }
 
     const metrics = await prisma.healthMetrics.upsert({
       where: {
@@ -256,16 +276,11 @@ router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
           date: targetDate,
         },
       },
-      update: {
-        ...metricsData,
-        source: metricsData.source || "manual",
-      },
-      create: {
-        userId,
-        date: targetDate,
-        ...metricsData,
-        source: metricsData.source || "manual",
-      },
+      update: updateData,
+      create: createData,
+      include: {
+        workouts: true
+      }
     });
 
     res.status(201).json({

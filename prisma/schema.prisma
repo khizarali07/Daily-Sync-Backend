@@ -173,9 +173,8 @@ model HealthMetrics {
   source          String?  // "manual", "google_fit", "apple_health", "fitbit"
   rawData         String?  // Store raw API response for debugging as JSON string
 
-  // Workout
-  workoutId       String?
-  workout         Workout? @relation(fields: [workoutId], references: [id], onDelete: SetNull)
+  // Workouts
+  workouts        Workout[]
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
