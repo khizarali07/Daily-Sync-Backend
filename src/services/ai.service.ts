@@ -100,6 +100,7 @@ export interface ImageAnalysisOptions {
   maxTokens?: number;
   temperature?: number;
   systemInstruction?: string;
+  isFood?: boolean;
 }
 
 export async function analyzeImageWithText(
@@ -117,12 +118,14 @@ export async function analyzeImageWithText(
     
     // Format the image properly to remove the MIME type prefix if the Python backend adds it
     const base64 = image.replace(/^data:image\/\w+;base64,/, "");
+    
+    const endpoint = options?.isFood ? "/analyze-food" : "/analyze-image";
 
-    const response = await axios.post(`${localAiUrl}/analyze-food`, {
+    const response = await axios.post(`${localAiUrl}${endpoint}`, {
       image: base64,
       prompt: sysInstruction + prompt
     }, {
-      timeout: 120000 // 2 minutes for VLM analysis
+      timeout: 300000 // 5 minutes for VLM analysis on heavy images
     });
     
     // The Python server returns JSON directly, we stringify it to pass it back to our JSON-repair logic

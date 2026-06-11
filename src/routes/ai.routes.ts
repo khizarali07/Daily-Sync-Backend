@@ -59,6 +59,7 @@ async function callLocalReasoningWithImage(
     maxTokens?: number;
     temperature?: number;
     systemInstruction?: string;
+    isFood?: boolean;
   },
 ): Promise<string> {
   const systemInstruction =
@@ -69,6 +70,7 @@ async function callLocalReasoningWithImage(
     maxTokens: options?.maxTokens ?? 1000,
     temperature: options?.temperature ?? 0.2,
     systemInstruction,
+    isFood: options?.isFood,
   });
 }
 
@@ -564,7 +566,7 @@ router.post("/analyze-food", authenticate, async (req: AuthRequest, res: Respons
 
 If food is unclear, still return valid JSON with sensible defaults and a summary note.`;
 
-    const result = await callLocalReasoningWithImage(image, prompt);
+    const result = await callLocalReasoningWithImage(image, prompt, { isFood: true });
     const parsedFood = parseFoodJsonBlock(result) || await repairFoodJsonFromRaw(result);
 
     if (parsedFood) {
@@ -868,6 +870,7 @@ router.post("/generate-summary", authenticate, async (req: AuthRequest, res: Res
     // Get health metrics for the day
     const health = await prisma.healthMetrics.findUnique({
       where: { userId_date: { userId, date: targetDate } },
+      include: { workout: true },
     });
 
     // Build the mega-prompt
@@ -892,7 +895,8 @@ Health Data:
 - Water: ${health.waterIntake ? health.waterIntake + "L" : "Not recorded"}
 - Mood: ${health.moodScore ? health.moodScore + "/10" : "Not recorded"}
 - Energy: ${health.energyLevel ? health.energyLevel + "/10" : "Not recorded"}
-- Stress: ${health.stressLevel ? health.stressLevel + "/10" : "Not recorded"}` : "No health data recorded.";
+- Stress: ${health.stressLevel ? health.stressLevel + "/10" : "Not recorded"}
+- Workout: ${health.workout ? health.workout.name : "None recorded"}` : "No health data recorded.";
 
     const megaPrompt = `You are a personal life coach and diary writer. Generate a thoughtful, motivational daily diary entry based on the following data.
 

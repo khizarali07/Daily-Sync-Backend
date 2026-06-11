@@ -33,6 +33,7 @@ const healthMetricsSchema = z.object({
   energyLevel: z.number().int().min(1).max(10).optional(),
   stressLevel: z.number().int().min(1).max(10).optional(),
   source: z.string().optional(),
+  workoutId: z.string().optional(),
 });
 
 /**
@@ -63,6 +64,9 @@ router.get("/today", authenticate, async (req: AuthRequest, res: Response) => {
           userId,
           date: today,
         },
+      },
+      include: {
+        workout: true,
       },
     });
 
@@ -121,6 +125,9 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
           userId,
           date: targetDate,
         },
+      },
+      include: {
+        workout: true,
       },
     });
 
@@ -182,6 +189,9 @@ router.get("/range", authenticate, async (req: AuthRequest, res: Response) => {
           gte: start,
           lte: end,
         },
+      },
+      include: {
+        workout: true,
       },
       orderBy: { date: "asc" },
     });
@@ -493,6 +503,9 @@ router.get("/stats/weekly", authenticate, async (req: AuthRequest, res: Response
           gte: startDate,
           lte: endDate,
         },
+      },
+      include: {
+        workout: true,
       },
       orderBy: { date: "asc" },
     });

@@ -11,6 +11,7 @@ import healthRoutes from "./routes/health.routes";
 import nutritionTargetsRoutes from "./routes/nutrition-targets.routes";
 import mealsRoutes from "./routes/meals.routes";
 import localAiRoutes from "./routes/local-ai.routes";
+import workoutsRoutes from "./routes/workouts.routes";
 
 export const createApp = () => {
   const app = express();
@@ -66,6 +67,7 @@ export const createApp = () => {
   app.use("/api/health", healthRoutes);
   app.use("/api/nutrition-targets", nutritionTargetsRoutes);
   app.use("/api/meals", mealsRoutes);
+  app.use("/api/workouts", workoutsRoutes);
 
   // Error handling middleware
   app.use((err: any, req: Request, res: Response, next: any) => {
