@@ -225,11 +225,60 @@ function normalizeWorkoutData(input: any): {
   };
 }
 
+function applyOmega3Fallback(parsedFood: any) {
+  if (!parsedFood || !Array.isArray(parsedFood.foodItems)) return;
+  
+  const OMEGA3_FALLBACKS: Record<string, number> = {
+    'walnut': 9.08,      // per 100g
+    'walnuts': 9.08,
+    'chia seed': 17.83,
+    'chia seeds': 17.83,
+    'flaxseed': 22.8,
+    'flax seeds': 22.8,
+    'hemp seed': 9.3,
+    'hemp seeds': 9.3,
+  };
+
+  parsedFood.foodItems.forEach((item: any) => {
+    if (!item || !item.name) return;
+    const nameLower = item.name.toLowerCase();
+    for (const [key, valuePer100g] of Object.entries(OMEGA3_FALLBACKS)) {
+      if (nameLower.includes(key)) {
+        let grams = 100;
+        if (item.grams) {
+          grams = item.grams;
+        } else if (item.quantity) {
+          const match = item.quantity.match(/(\d+(\.\d+)?)/);
+          if (match) grams = parseFloat(match[1]);
+        }
+        
+        const fallbackValue = (valuePer100g * grams) / 100;
+        const currentVal = item.nutrients?.others?.omega3G || 0;
+        
+        if (currentVal < 0.5) {
+          const diff = fallbackValue - currentVal;
+          if (!item.nutrients) item.nutrients = {};
+          if (!item.nutrients.others) item.nutrients.others = {};
+          
+          item.nutrients.others.omega3G = fallbackValue;
+          
+          // Update meal total
+          if (parsedFood.others) {
+            parsedFood.others.omega3G = (parsedFood.others.omega3G || 0) + diff;
+          }
+        }
+      }
+    }
+  });
+}
+
 function parseFoodJsonBlock(raw: string): ReturnType<typeof normalizeFoodData> | null {
   const extracted = extractCleanJson(raw);
   const parsed = safeParseJson<any>(extracted);
   if (!parsed) return null;
-  return normalizeFoodData(parsed);
+  const normalized = normalizeFoodData(parsed);
+  applyOmega3Fallback(normalized);
+  return normalized;
 }
 
 function parseWorkoutJsonBlock(raw: string): ReturnType<typeof normalizeWorkoutData> | null {
@@ -870,7 +919,7 @@ router.post("/generate-summary", authenticate, async (req: AuthRequest, res: Res
     // Get health metrics for the day
     const health = await prisma.healthMetrics.findUnique({
       where: { userId_date: { userId, date: targetDate } },
-      include: { workout: true },
+      include: { workouts: true },
     });
 
     // Build the mega-prompt
@@ -896,7 +945,7 @@ Health Data:
 - Mood: ${health.moodScore ? health.moodScore + "/10" : "Not recorded"}
 - Energy: ${health.energyLevel ? health.energyLevel + "/10" : "Not recorded"}
 - Stress: ${health.stressLevel ? health.stressLevel + "/10" : "Not recorded"}
-- Workout: ${health.workout ? health.workout.name : "None recorded"}` : "No health data recorded.";
+- Workout: ${health.workouts ? health.workouts[0]?.name : "None recorded"}` : "No health data recorded.";
 
     const megaPrompt = `You are a personal life coach and diary writer. Generate a thoughtful, motivational daily diary entry based on the following data.
 

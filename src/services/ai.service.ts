@@ -211,6 +211,7 @@ export async function recalculateFood(foodItems: {name: string, quantity: string
     const itemsText = foodItems.map(item => `- ${item.name} (${item.quantity})`).join('\n');
     const prompt = `You are a nutrition data entry AI. Your ONLY job is to translate complex food names into STANDARD USDA format.
 You MUST NOT return the original name. You MUST translate it.
+CRITICAL RULE: Convert any cooked or baked items into their RAW INGREDIENT equivalents (e.g. mapping "5 Rotis" to "Whole Wheat Flour", "Boiled chicken" to "Raw chicken breast"). The USDA API measures water weight for cooked items, which ruins macros.
 
 EXAMPLE INPUT:
 - Beef Qeema (100g)
@@ -223,7 +224,7 @@ EXAMPLE OUTPUT:
 {
   "items": [
     {
-      "name": "Ground beef",
+      "name": "Ground beef, raw",
       "quantity": "100g"
     },
     {
@@ -231,7 +232,7 @@ EXAMPLE OUTPUT:
       "quantity": "150g"
     },
     {
-      "name": "Whole wheat flatbread",
+      "name": "Whole wheat flour",
       "quantity": "100g"
     },
     {

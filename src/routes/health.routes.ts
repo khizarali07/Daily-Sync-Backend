@@ -126,8 +126,7 @@ router.get("/:date", authenticate, async (req: AuthRequest, res: Response) => {
           date: targetDate,
         },
       },
-      include: {
-        workout: true,
+      include: { workouts: true,
       },
     });
 
@@ -255,7 +254,7 @@ router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
     };
 
     if (workoutId) {
-      updateData.workouts = { connect: { id: workoutId } };
+      updateData.workoutss = { connect: { id: workoutId } };
     }
 
     const createData: any = {
@@ -266,7 +265,7 @@ router.post("/", authenticate, async (req: AuthRequest, res: Response) => {
     };
 
     if (workoutId) {
-      createData.workouts = { connect: { id: workoutId } };
+      createData.workoutss = { connect: { id: workoutId } };
     }
 
     const metrics = await prisma.healthMetrics.upsert({
@@ -519,8 +518,7 @@ router.get("/stats/weekly", authenticate, async (req: AuthRequest, res: Response
           lte: endDate,
         },
       },
-      include: {
-        workout: true,
+      include: { workouts: true,
       },
       orderBy: { date: "asc" },
     });
