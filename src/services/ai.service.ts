@@ -209,27 +209,44 @@ export async function recalculateFood(foodItems: {name: string, quantity: string
 
   try {
     const itemsText = foodItems.map(item => `- ${item.name} (${item.quantity})`).join('\n');
-    const prompt = `You are an expert nutritionist and data entry specialist for the USDA National Nutrient Database.
-The user provided the following food items:
-${itemsText}
+    const prompt = `You are a nutrition data entry AI. Your ONLY job is to translate complex food names into STANDARD USDA format.
+You MUST NOT return the original name. You MUST translate it.
 
-Rules for Translation:
-1. Translate localized, complex, or colloquial names into standard, simple English foods that are guaranteed to be in the USDA database (e.g. "Beef Qeema" -> "Ground beef", "Roti" -> "Whole wheat flatbread", "Buffalo Milk" -> "Milk, whole").
-2. Do NOT include brand names unless absolutely essential.
-3. Keep the names as simple and generic as possible.
-4. If the user included an explicit multiplier or quantity in the name itself (like "3 Whole Eggs", "2 medium apples", "1 cup milk"), calculate and output the estimated weight in grams (e.g. 3 eggs = 150g). If no quantity is specified in the name, use the quantity provided in parentheses.
+EXAMPLE INPUT:
+- Beef Qeema (100g)
+- 3 Whole Eggs (None)
+- 2 Medium Whole Wheat Rotis (100g)
+- 1 Cup Fresh Buffalo Milk (None)
 
-Return ONLY a markdown JSON block exactly in this format:
+EXAMPLE OUTPUT:
 \`\`\`json
 {
   "items": [
     {
-      "name": "standard usda food name",
+      "name": "Ground beef",
+      "quantity": "100g"
+    },
+    {
+      "name": "Egg, whole, raw",
       "quantity": "150g"
+    },
+    {
+      "name": "Whole wheat flatbread",
+      "quantity": "100g"
+    },
+    {
+      "name": "Milk, whole",
+      "quantity": "250g"
     }
   ]
 }
 \`\`\`
+
+ACTUAL INPUT:
+${itemsText}
+
+Translate the ACTUAL INPUT exactly like the example. DO NOT return the original names.
+Return ONLY the JSON block.
 `;
 
     const aiResponse = await generateText(prompt, "You return strict markdown JSON blocks only.");
