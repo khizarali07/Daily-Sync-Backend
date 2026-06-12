@@ -205,11 +205,54 @@ export async function recalculateFood(foodItems: {name: string, quantity: string
   const localAiUrl = process.env.LOCAL_AI_URL;
   if (!localAiUrl) throw new Error("LOCAL_AI_URL not configured for local AI engine.");
 
+  let processedItems = [...foodItems];
+
+  try {
+    const itemsText = foodItems.map(item => `- ${item.name} (${item.quantity})`).join('\n');
+    const prompt = `You are an expert nutritionist and data entry specialist for the USDA National Nutrient Database.
+The user provided the following food items:
+${itemsText}
+
+Rules for Translation:
+1. Translate localized, complex, or colloquial names into standard, simple English foods that are guaranteed to be in the USDA database (e.g. "Beef Qeema" -> "Ground beef", "Roti" -> "Whole wheat flatbread", "Buffalo Milk" -> "Milk, whole").
+2. Do NOT include brand names unless absolutely essential.
+3. Keep the names as simple and generic as possible.
+4. If the user included an explicit multiplier or quantity in the name itself (like "3 Whole Eggs", "2 medium apples", "1 cup milk"), calculate and output the estimated weight in grams (e.g. 3 eggs = 150g). If no quantity is specified in the name, use the quantity provided in parentheses.
+
+Return ONLY a markdown JSON block exactly in this format:
+\`\`\`json
+{
+  "items": [
+    {
+      "name": "standard usda food name",
+      "quantity": "150g"
+    }
+  ]
+}
+\`\`\`
+`;
+
+    const aiResponse = await generateText(prompt, "You return strict markdown JSON blocks only.");
+    const match = aiResponse.match(/```json\s*([\s\S]*?)\s*```/i);
+    const rawJson = match ? match[1] : aiResponse.replace(/```/g, '');
+    const parsed = JSON.parse(rawJson);
+    
+    if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+      processedItems = parsed.items.map((item: any) => ({
+        name: item.name,
+        quantity: String(item.grams || item.quantity || "100g").replace(/[^0-9.]/g, '') + "g"
+      }));
+      console.log("[AI Service] Translated food items for USDA:", processedItems);
+    }
+  } catch (error) {
+    console.error("[AI Service] AI translation of food items failed, falling back to original items:", error);
+  }
+
   const response = await axios.post(`${localAiUrl}/recalculate-food`, {
-    foodItems,
+    foodItems: processedItems,
     summary
   }, {
-    timeout: 30000 // 30 seconds for USDA API aggregation
+    timeout: 60000 // 60 seconds for LLM + USDA API aggregation
   });
 
   return typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
